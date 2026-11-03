@@ -11,14 +11,15 @@ venv/
 .coverage
 htmlcov/
 
-# Generated data and artefacts (reproducible via the pipelines)
-data/processed/
-data/rejected/
-models/
-reports/
-mlflow.db
-mlartifacts/
-mlruns/
+# Generated data and artefacts (reproducible via the pipelines).
+# Leading "/" anchors to the repo root, so src/churnai/models/ (source code) is NOT ignored.
+/data/processed/
+/data/rejected/
+/models/
+/reports/
+/mlflow.db
+/mlartifacts/
+/mlruns/
 
 # Local tool settings
 .claude/
