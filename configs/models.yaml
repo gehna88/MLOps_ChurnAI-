@@ -1,0 +1,44 @@
+# Candidate model configurations compared by `make train`.
+# `estimator` selects a builder from churnai.models.factory; `params` are passed
+# through to the estimator. The special value `auto` for scale_pos_weight is
+# replaced with (negatives / positives) computed on the training split.
+
+candidates:
+  - name: logreg_baseline
+    estimator: logistic_regression
+    params:
+      C: 1.0
+      max_iter: 2000
+      class_weight: balanced
+
+  - name: xgb_shallow
+    estimator: xgboost
+    params:
+      n_estimators: 400
+      max_depth: 3
+      learning_rate: 0.05
+      subsample: 0.9
+      colsample_bytree: 0.8
+      scale_pos_weight: auto
+
+  - name: xgb_deep
+    estimator: xgboost
+    params:
+      n_estimators: 300
+      max_depth: 6
+      learning_rate: 0.03
+      subsample: 0.8
+      colsample_bytree: 0.8
+      min_child_weight: 3
+      scale_pos_weight: auto
+
+  - name: lgbm_default
+    estimator: lightgbm
+    params:
+      n_estimators: 400
+      num_leaves: 31
+      learning_rate: 0.03
+      subsample: 0.8
+      subsample_freq: 1
+      colsample_bytree: 0.8
+      class_weight: balanced
