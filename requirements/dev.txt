@@ -1,0 +1,6 @@
+# Everything needed to develop, lint and test locally and in CI.
+-r train.txt
+pytest==8.3.4
+pytest-cov==6.0.0
+httpx==0.28.1
+ruff==0.8.4

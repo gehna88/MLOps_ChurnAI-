@@ -1,0 +1,53 @@
+# ChurnAI pipeline configuration.
+# All paths are relative to the project root (CHURNAI_HOME, defaulting to the
+# current working directory) so the project runs from any clean clone.
+
+project:
+  name: churnai
+  random_seed: 42
+
+paths:
+  raw_data: data/raw/Customer-Churn-Records.csv
+  processed_dir: data/processed
+  rejected_dir: data/rejected
+  reports_dir: reports
+  model_dir: models
+
+data:
+  # Fractions of the full dataset; splits are stratified on the target.
+  test_size: 0.20
+  # Columns removed before modelling, with the reason recorded in code review.
+  identifier_columns: [RowNumber, CustomerId, Surname]
+  leakage_columns: [Complain]
+  # Abort preparation if more than this fraction of rows fails validation;
+  # a large rejection rate means an upstream break, not a few bad records.
+  max_rejected_fraction: 0.05
+
+training:
+  models_config: configs/models.yaml
+  cv_folds: 5
+  primary_metric: roc_auc
+  # Any held-out ROC-AUC above this is treated as a target-leakage red flag.
+  leakage_auc_threshold: 0.95
+  # The decision threshold is tuned on out-of-fold predictions to maximise this.
+  threshold_metric: f1
+
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  artifact_dir: mlartifacts
+  # Runtime dependencies recorded with each logged model.
+  pip_requirements: requirements/serve.txt
+  experiment_name: churnai
+  registered_model_name: churnai-classifier
+  champion_alias: champion
+
+explain:
+  top_k: 5
+  background_size: 200
+
+monitoring:
+  psi_bins: 10
+  psi_alert_threshold: 0.2
+  drift_window_size: 500
+  drift_min_samples: 100
+  latency_window_size: 1000

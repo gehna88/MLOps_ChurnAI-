@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated data and artefacts (reproducible via the pipelines)
+data/processed/
+data/rejected/
+models/
+reports/
+mlflow.db
+mlartifacts/
+mlruns/
+
+# Local tool settings
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
