@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "churnai"
+version = "0.1.0"
+description = "End-to-end MLOps pipeline for bank customer churn prediction."
+readme = "README.md"
+requires-python = ">=3.11"
+# This is an application, not a library: the pinned lock files in requirements/
+# are the single source of truth for dependencies. Install with:
+#   pip install -r requirements/dev.txt && pip install -e . --no-deps
+dependencies = []
+
+[project.scripts]
+churnai-prepare = "churnai.pipelines.prepare_data:main"
+churnai-train = "churnai.pipelines.train:main"
+churnai-profile = "churnai.pipelines.profile_data:main"
+churnai-shap-backfill = "churnai.pipelines.backfill_shap:main"
+churnai-tune = "churnai.pipelines.tune:main"
+churnai-compare = "churnai.pipelines.compare_models:main"
+churnai-ab-fetch = "churnai.pipelines.fetch_ab_bundles:main"
+churnai-ab-online = "churnai.pipelines.ab_online:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------- tooling ---
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "PL", "RUF"]
+ignore = [
+    "PLR0913",  # sklearn-style constructors legitimately take many args
+    "N803",     # sklearn convention: X as argument name
+    "N806",     # sklearn convention: X as variable name
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom is evaluated per request, not at import.
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004"]  # literal expected values are fine in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+markers = ["slow: tests that train real models (deselect with -m 'not slow')"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+    # Informational notice from SHAP about its own LightGBM output format; handled in explainer.py.
+    "ignore:LightGBM binary classifier with TreeExplainer:UserWarning",
+]

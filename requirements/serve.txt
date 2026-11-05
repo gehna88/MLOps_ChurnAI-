@@ -1,0 +1,15 @@
+# Runtime dependencies for the inference service (what ships in the Docker image).
+# Pinned for reproducibility; bump deliberately and re-run the full test suite.
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pyyaml==6.0.2
+joblib==1.4.2
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.5.2
+# CPU-only wheel on Linux avoids pulling ~200MB of CUDA libraries into the image.
+xgboost-cpu==2.1.3; sys_platform == "linux"
+xgboost==2.1.3; sys_platform != "linux"
+lightgbm==4.5.0
+shap==0.46.0

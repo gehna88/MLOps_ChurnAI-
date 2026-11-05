@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated data and artefacts (reproducible via the pipelines).
+# Leading "/" anchors to the repo root, so src/churnai/models/ (source code) is NOT ignored.
+/data/processed/
+/data/rejected/
+/models/
+/reports/
+/mlflow.db
+/mlflow.db.backup*
+/mlartifacts/
+/mlruns/
+/logs/
+
+# Local tool settings
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

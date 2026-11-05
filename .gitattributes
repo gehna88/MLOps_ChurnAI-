@@ -1,0 +1,9 @@
+# Store and check out text files with LF endings on every OS, so the Makefile,
+# Dockerfile and shell scripts work unchanged in Linux CI and containers.
+* text=auto eol=lf
+
+# Binary files: never touch line endings.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.joblib binary
