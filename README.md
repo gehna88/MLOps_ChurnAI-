@@ -1,5 +1,7 @@
 # ChurnAI
 
+[![CI](https://github.com/gehna88/MLOps_ChurnAI-/actions/workflows/ci.yml/badge.svg)](https://github.com/gehna88/MLOps_ChurnAI-/actions/workflows/ci.yml)
+
 **An end-to-end MLOps pipeline for bank customer churn prediction.**
 
 ChurnAI takes a churn classifier from raw CSV to a tested, explainable, monitored
@@ -14,7 +16,9 @@ the last point of accuracy.
 
 ## Contents
 
+- [Milestone 1 submission map](#milestone-1-submission-map)
 - [Results](#results)
+- [Best MLflow run](#best-mlflow-run)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Commands](#commands)
@@ -24,6 +28,45 @@ the last point of accuracy.
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
+- [Contributors](CONTRIBUTION.md)
+
+---
+
+## Milestone 1 submission map
+
+Where to find each Milestone 1 requirement (tag `v1.0-milestone1`):
+
+| Requirement | Where |
+|---|---|
+| Pitch, architecture diagram, quick start, dataset and task | This README: [top](#churnai), [Architecture](#architecture), [Quickstart](#quickstart), [Dataset](#dataset-and-task) |
+| Data preparation, separate from training, with validation | [`src/churnai/pipelines/prepare_data.py`](src/churnai/pipelines/prepare_data.py), [`src/churnai/data/validation.py`](src/churnai/data/validation.py) |
+| Training script: held-out evaluation, versioned model artefact | [`src/churnai/pipelines/train.py`](src/churnai/pipelines/train.py) writes `models/<model>-v<version>-<run>.joblib` and `models/model.joblib` |
+| MLflow: 3+ runs, params and metrics, best run justified | 4 runs per training; see [Best MLflow run](#best-mlflow-run) |
+| FastAPI service with `/predict`, Pydantic validation, `/docs` | [`src/churnai/api/app.py`](src/churnai/api/app.py) (app factory), [`routes.py`](src/churnai/api/routes.py), [`schemas.py`](src/churnai/api/schemas.py) |
+| pytest: data prep, model loading, prediction endpoint | [`tests/test_prepare_data.py`](tests/test_prepare_data.py), [`tests/test_training.py`](tests/test_training.py), [`tests/test_api.py`](tests/test_api.py); how to run in [Testing](#testing) |
+| Names, ERP IDs and member-to-task table | [`CONTRIBUTION.md`](CONTRIBUTION.md) |
+| AI tools used, for what, and our review | [`AI_USAGE.md`](AI_USAGE.md) |
+| CI pipeline | [`.github/workflows/ci.yml`](.github/workflows/ci.yml): runs on Python 3.11 on every pull request and push to `main` (see [Continuous integration](#continuous-integration)) |
+
+> The FastAPI app lives in the `churnai` package (`src/churnai/api/app.py`) rather than a
+> loose `src/app.py`, so it is importable, installable and testable like the rest of the code.
+
+---
+
+## Dataset and task
+
+- **Data:** [Bank Customer Churn](https://www.kaggle.com/datasets/radheshyamkollipara/bank-customer-churn)
+  by Radheshyam Kollipara (Kaggle). It covers 10,000 customers of a European bank in France,
+  Germany and Spain, with 18 columns: demographics, balance, products, activity, card
+  type, satisfaction and loyalty points. It is stored at `data/raw/Customer-Churn-Records.csv`.
+- **Task:** binary classification. Predict `Exited` (1 means the customer closed their
+  account). About 20% of customers churned.
+- **Excluded columns:**
+  - `RowNumber`, `CustomerId` and `Surname` are identifiers, dropped so the model cannot
+    memorise customers.
+  - `Complain` is target leakage (see [Results](#results)).
+- **Primary metric:** ROC-AUC, because the classes are imbalanced and retention teams rank
+  customers by risk. Recall, precision and F1 on the churn class are logged alongside it.
 
 ---
 
@@ -59,6 +102,58 @@ selection or threshold tuning) gives the unbiased estimate.
 
 ---
 
+## Best MLflow run
+
+Every `make train` logs **one MLflow run per candidate** (4 runs) to the `churnai`
+experiment. Each run records:
+- the model family and hyperparameters
+- CV and test metrics: ROC-AUC, PR-AUC, F1, recall, precision, accuracy and Brier score
+- the tuned threshold, the confusion matrix, and the fitted model
+
+The champion is registered as `churnai-classifier` with the alias `champion`.
+
+**Best run: `xgb_shallow`**
+
+| | |
+|---|---|
+| MLflow run ID | `65c7276acf3e4faf90c5f0e29fbd9108` |
+| Registry version | `churnai-classifier` **v2** (`@champion`) |
+| Served as | `xgb_shallow-v2-65c7276a` (returned in every `/predict` response) |
+| Hyperparameters | `n_estimators=400, max_depth=3, learning_rate=0.05, subsample=0.9, colsample_bytree=0.8, scale_pos_weight=3.908` |
+| CV ROC-AUC (selection metric) | **0.862** |
+| Test ROC-AUC (held-out) | **0.872** |
+| Decision threshold | 0.61 (tuned on out-of-fold predictions for F1) |
+
+**Why this run wins:**
+
+1. **It has the highest cross-validated ROC-AUC.** ROC-AUC is the primary metric because
+   classes are imbalanced and retention teams rank customers by risk. Selection uses CV on
+   the training split only, so the test set stays an unbiased check.
+2. **It is the simplest of the near-tied models.** `xgb_deep` (0.861) and LightGBM (0.858)
+   are within 0.004 AUC, which is within fold-to-fold noise. The shallow model (depth 3)
+   wins and is the least likely to overfit, so there is no reason to prefer a more complex one.
+3. **The held-out test confirms it.** The test AUC (0.872) is consistent with CV (0.862),
+   so there is no sign of overfitting, and it is far below the 0.95 leakage alarm.
+4. **It clearly beats the interpretable baseline.** Logistic Regression scores 0.766, so
+   the gain over a linear model is about 0.09 AUC.
+
+**Reproduce and inspect:**
+
+```bash
+make data && make train   # logs 4 new runs and registers a new champion version
+make mlflow-ui            # http://127.0.0.1:5000 → experiment "churnai"
+```
+
+![MLflow runs table](docs/images/mlflow-runs.png)
+![MLflow run comparison](docs/images/mlflow-compare.png)
+![MLflow model registry](docs/images/mlflow-registry.png)
+
+> **Note on the MLflow requirement for LLM projects:** ChurnAI is a classical tabular ML
+> project, so experiments compare *training runs* (model families and hyperparameters)
+> rather than prompts, LLMs or temperature settings.
+
+---
+
 ## Architecture
 
 Two pipelines connected by a single hand-off artefact, the **model bundle**. Every
@@ -88,7 +183,23 @@ is saved *inside* the model, so the API cannot drift from training.
 
 ## Quickstart
 
-Requires **Python 3.11+**. Run everything from the repository root.
+Requires **Python 3.11+** and Git. Run everything from the repository root.
+
+**In short:**
+
+```bash
+git clone https://github.com/gehna88/MLOps_ChurnAI-.git && cd MLOps_ChurnAI-
+make setup && make data && make train && make serve
+```
+
+Run these inside an activated virtualenv (step 1 below).
+
+### 0. Clone
+
+```bash
+git clone https://github.com/gehna88/MLOps_ChurnAI-.git
+cd MLOps_ChurnAI-
+```
 
 ### 1. Create and activate a virtualenv
 
@@ -120,8 +231,8 @@ source .venv/bin/activate
 Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 
 > **Windows and `make`:** GNU Make is not installed by default. Install it with
-> `winget install GnuWin32.Make` (then reopen the terminal), or use the *Without `make`*
-> column. Both are equivalent.
+> `winget install ezwinports.make` from a non-admin PowerShell (then reopen the terminal),
+> or use the *Without `make`* column. Both are equivalent.
 
 ---
 
@@ -131,7 +242,7 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 |---|---|---|
 | `setup` | `pip install -r requirements/dev.txt && pip install -e . --no-deps` | Install pinned dependencies and the package |
 | `lint` | `ruff check src tests scripts` | Static checks |
-| `test` | `pytest` | Full suite (72 tests) |
+| `test` | `pytest` | Full suite (74 tests) |
 | `test-fast` | `pytest -m "not slow"` | Unit tests only (seconds) |
 | `coverage` | `pytest --cov=churnai --cov-report=term-missing` | Suite with coverage report |
 | `check` | lint + test | The gate CI runs |
@@ -150,7 +261,7 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 |---|---|
 | `profile` | `reports/data_profile.md` |
 | `data` | `data/processed/{train,test}.csv`, `summary.json`; rejected rows (with reasons) in `data/rejected/` |
-| `train` | `models/model.joblib`, `models/metadata.json`, `reports/leaderboard.csv`, one MLflow run per candidate, champion registered as `churnai-classifier@champion` |
+| `train` | `models/model.joblib` (served), `models/<model>-v<version>-<run>.joblib` (versioned copy), `models/metadata.json`, `reports/leaderboard.csv`, one MLflow run per candidate, champion registered as `churnai-classifier@champion` |
 
 ---
 
@@ -274,7 +385,7 @@ ChurnAI/
 │   ├── monitoring/            # PSI drift detection, request metrics
 │   ├── api/                   # FastAPI app factory, routes, schemas, inference service
 │   └── pipelines/             # CLI entry points: profile_data, prepare_data, train
-├── tests/                     # 72 tests, about 95% line coverage
+├── tests/                     # 74 tests, about 95% line coverage
 ├── Makefile
 └── pyproject.toml             # package metadata, ruff and pytest configuration
 ```
@@ -337,9 +448,17 @@ Environment variables override config without editing files:
 ## Testing
 
 ```bash
-make test-fast   # unit tests, seconds
-make coverage    # full suite with coverage
+make test        # full suite (74 tests)        or: pytest
+make test-fast   # unit tests only, seconds     or: pytest -m "not slow"
+make coverage    # full suite with coverage     or: pytest --cov=churnai --cov-report=term-missing
 ```
+
+The three areas the milestone asks for are covered by:
+- **Data preparation:** `tests/test_prepare_data.py` and `tests/test_validation.py`
+- **Model loading:** `tests/test_training.py`. It covers bundle load and save, the versioned
+  copy, and a clear error when no model exists.
+- **Prediction endpoint:** `tests/test_api.py`. It covers `/predict`, `/predict/batch`,
+  `/explain` and 422 validation.
 
 Tests run against an isolated temporary project (a stratified sample of the real data
 plus fast model settings). They never touch your `models/` or `mlflow.db`, and they don't
@@ -354,6 +473,21 @@ require `make train` to have been run first.
 | API | All endpoints, 422 validation, batch limits, request-ID propagation, behaviour without a model |
 | MLflow | Runs logged, champion registered, bundle lineage matches the registry |
 
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request to
+`main` and every push to `main`, on a fresh Ubuntu machine with **Python 3.11**. Each run proves the
+project works from a clean clone:
+
+1. `make setup`: install the pinned dependencies
+2. `make lint`: ruff
+3. `make test`: the full pytest suite
+4. `make profile`, `make data`, `make train`: the full pipeline, including MLflow tracking and registration
+5. Start the API, check `/health`, and call `/predict` with a real customer
+
+The training reports and model metadata are uploaded as a downloadable artifact on each
+run (**Actions → a run → Artifacts**).
+
 ---
 
 ## Roadmap
@@ -361,7 +495,7 @@ require `make train` to have been run first.
 | Milestone | Scope | Status |
 |---|---|---|
 | **1. Model and API** | Data pipeline, MLflow-tracked training, FastAPI `/predict` and `/explain`, tests, Makefile, README | ✅ |
-| **2. Deployment** | Multi-stage Docker image, GitHub Actions (lint, test, build, push to GHCR), Render deployment, RUNBOOK, rollback drill | 🔜 |
+| **2. Deployment** | Multi-stage Docker image, extend CI to build and push to GHCR, Render deployment, RUNBOOK, rollback drill | 🔜 |
 | **3. Final presentation** | Live demo of pipeline, MLflow, CI and API | ⏳ |
 
 `/health`, `/metrics`, JSON logging and PSI drift monitoring (Milestone 2 scope) are
@@ -369,5 +503,5 @@ already implemented.
 
 ---
 
-**Dataset:** [Bank Customer Churn](https://www.kaggle.com/datasets/radheshyamkollipara/bank-customer-churn)
-by Radheshyam Kollipara (Kaggle): 10,000 customers across France, Germany and Spain, 18 columns.
+**Team:** Gehna Bhatia (29054) and M. Zayed Nauman (29047). See [CONTRIBUTION.md](CONTRIBUTION.md)
+for who did what.
