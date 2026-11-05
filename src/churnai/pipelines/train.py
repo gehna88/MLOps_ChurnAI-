@@ -4,8 +4,9 @@ Run with ``make train`` or ``python -m churnai.pipelines.train``.
 
 Outputs
 -------
-* One MLflow run per candidate (params, CV + test metrics, confusion matrix, model)
-* The champion registered in the MLflow Model Registry with the ``champion`` alias
+* One MLflow run per candidate (params, CV + test metrics, confusion matrix, model, SHAP plots)
+* The champion registered in the MLflow Model Registry with the ``champion`` alias,
+  and the runner-up with the ``challenger`` alias (both with their bundles attached)
 * ``models/model.joblib``  - the bundle the API serves (latest champion)
 * ``models/<version>.joblib`` - immutable versioned copy, e.g. ``xgb_shallow-v2-65c7276a.joblib``
 * ``models/metadata.json`` - human-readable lineage of that bundle
@@ -14,6 +15,7 @@ Outputs
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,16 +24,18 @@ import pandas as pd
 from churnai.config import Settings
 from churnai.data import io
 from churnai.data.schema import FEATURE_COLUMNS
+from churnai.explain.report import SHAP_ARTIFACT_PATH, write_shap_report
 from churnai.logging_utils import get_logger
 from churnai.models.bundle import ModelBundle, ModelMetadata
 from churnai.models.factory import load_model_specs
-from churnai.models.tracking import ExperimentTracker, MlflowTracker
+from churnai.models.tracking import ExperimentTracker, make_tracker
 from churnai.models.training import (
     CandidateResult,
     ModelTrainer,
     guard_against_leakage,
     predict_positive,
     sample_background,
+    select_challenger,
     select_champion,
 )
 from churnai.monitoring.drift import ReferenceProfile
@@ -48,6 +52,15 @@ class TrainingOutcome:
     model_version: str
     bundle_path: Path
     leaderboard: pd.DataFrame
+    challenger: str | None = None
+
+
+def _log_shap(
+    settings: Settings, tracker: ExperimentTracker, result: CandidateResult, X_train: pd.DataFrame
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        for path in write_shap_report(result.pipeline, X_train, settings, Path(tmp)):
+            tracker.log_artifact(path, SHAP_ARTIFACT_PATH)
 
 
 def _log_candidate(tracker: ExperimentTracker, result: CandidateResult, example: pd.DataFrame) -> None:
@@ -82,15 +95,18 @@ def build_bundle(
     return ModelBundle(champion.pipeline, metadata, reference, background)
 
 
+def _ship_challenger(
+    settings: Settings, tracker: ExperimentTracker, challenger: CandidateResult,
+    X_train: pd.DataFrame, run_id: str,
+) -> None:
+    """Register the runner-up and attach its bundle so the A/B test can load it by alias."""
+    version = tracker.register(run_id, alias=settings.mlflow.challenger_alias)
+    bundle = build_bundle(settings, challenger, X_train, run_id, version)
+    tracker.log_bundle(run_id, bundle.save(settings.versioned_model_path(bundle.metadata.version)))
+
+
 def run(settings: Settings, tracker: ExperimentTracker | None = None) -> TrainingOutcome:
-    tracker = tracker or MlflowTracker(
-        tracking_uri=settings.mlflow_tracking_uri,
-        artifact_uri=settings.mlflow_artifact_uri,
-        experiment=settings.mlflow.experiment_name,
-        registered_model=settings.mlflow.registered_model_name,
-        champion_alias=settings.mlflow.champion_alias,
-        pip_requirements=settings.resolve(settings.mlflow.pip_requirements),
-    )
+    tracker = tracker or make_tracker(settings)
     X_train, y_train = io.split_features_target(io.read_csv(settings.train_path))
     X_test, y_test = io.split_features_target(io.read_csv(settings.test_path))
     X_train, X_test = X_train[list(FEATURE_COLUMNS)], X_test[list(FEATURE_COLUMNS)]
@@ -111,6 +127,7 @@ def run(settings: Settings, tracker: ExperimentTracker | None = None) -> Trainin
         with tracker.run(spec.name, tags={"estimator": spec.estimator}) as run_id:
             result = trainer.evaluate(spec, X_train, y_train, X_test, y_test)
             _log_candidate(tracker, result, example)
+            _log_shap(settings, tracker, result, X_train)
         results.append(result)
         run_ids[spec.name] = run_id
         logger.info("Candidate %-16s cv_roc_auc=%.4f test_roc_auc=%.4f threshold=%.2f",
@@ -123,9 +140,15 @@ def run(settings: Settings, tracker: ExperimentTracker | None = None) -> Trainin
     run_id = run_ids[champion.name]
     registered_version = tracker.register(run_id) if run_id else None
     bundle = build_bundle(settings, champion, X_train, run_id, registered_version)
-    bundle.save(settings.versioned_model_path(bundle.metadata.version))
+    versioned_path = bundle.save(settings.versioned_model_path(bundle.metadata.version))
+    if run_id:
+        tracker.log_bundle(run_id, versioned_path)
     bundle_path = bundle.save(settings.model_path)
     io.write_json(bundle.metadata.to_dict(), settings.model_dir / "metadata.json")
+
+    challenger = select_challenger(results, settings.training.primary_metric, champion)
+    if challenger and run_ids[challenger.name]:
+        _ship_challenger(settings, tracker, challenger, X_train, run_ids[challenger.name])
 
     leaderboard = pd.DataFrame([r.leaderboard_row() for r in results]).sort_values(
         f"cv_{settings.training.primary_metric}", ascending=False
@@ -136,7 +159,10 @@ def run(settings: Settings, tracker: ExperimentTracker | None = None) -> Trainin
 
     logger.info("Champion: %s (%s) saved to %s", champion.name, bundle.metadata.version,
                 bundle_path)
-    return TrainingOutcome(champion.name, bundle.metadata.version, bundle_path, leaderboard)
+    return TrainingOutcome(
+        champion.name, bundle.metadata.version, bundle_path, leaderboard,
+        challenger.name if challenger else None,
+    )
 
 
 def main() -> None:

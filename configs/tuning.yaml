@@ -1,0 +1,42 @@
+# Optuna search spaces used by `make tune`.
+# One study per model family. `fixed` params are passed as they are; each entry in
+# `space` is sampled per trial. The best params are written to configs/models.yaml
+# as a candidate called `name`, so `make train` compares them with the others.
+
+n_trials: 30
+
+studies:
+  - name: xgb_tuned
+    estimator: xgboost
+    fixed:
+      scale_pos_weight: auto
+    space:
+      n_estimators: {type: int, low: 100, high: 800}
+      max_depth: {type: int, low: 2, high: 7}
+      learning_rate: {type: float, low: 0.01, high: 0.2, log: true}
+      subsample: {type: float, low: 0.6, high: 1.0}
+      colsample_bytree: {type: float, low: 0.5, high: 1.0}
+      min_child_weight: {type: int, low: 1, high: 10}
+
+  - name: lgbm_tuned
+    estimator: lightgbm
+    fixed:
+      class_weight: balanced
+      subsample_freq: 1
+    space:
+      n_estimators: {type: int, low: 100, high: 800}
+      num_leaves: {type: int, low: 7, high: 63}
+      learning_rate: {type: float, low: 0.01, high: 0.2, log: true}
+      subsample: {type: float, low: 0.6, high: 1.0}
+      colsample_bytree: {type: float, low: 0.5, high: 1.0}
+      min_child_samples: {type: int, low: 5, high: 60}
+
+  - name: logreg_tuned
+    estimator: logistic_regression
+    fixed:
+      class_weight: balanced
+      max_iter: 2000
+      solver: liblinear
+    space:
+      C: {type: float, low: 0.001, high: 100.0, log: true}
+      penalty: {type: categorical, choices: [l1, l2]}

@@ -18,8 +18,10 @@ htmlcov/
 /models/
 /reports/
 /mlflow.db
+/mlflow.db.backup*
 /mlartifacts/
 /mlruns/
+/logs/
 
 # Local tool settings
 .claude/

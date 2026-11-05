@@ -25,6 +25,7 @@ data:
 
 training:
   models_config: configs/models.yaml
+  tuning_config: configs/tuning.yaml
   cv_folds: 5
   primary_metric: roc_auc
   # Any held-out ROC-AUC above this is treated as a target-leakage red flag.
@@ -38,12 +39,17 @@ mlflow:
   # Runtime dependencies recorded with each logged model.
   pip_requirements: requirements/serve.txt
   experiment_name: churnai
+  tuning_experiment: churnai-tuning
+  ab_experiment: churnai-ab
   registered_model_name: churnai-classifier
   champion_alias: champion
+  challenger_alias: challenger
 
 explain:
   top_k: 5
   background_size: 200
+  # Training rows behind the SHAP plots logged to each MLflow run.
+  report_sample_size: 2000
 
 monitoring:
   psi_bins: 10
@@ -51,3 +57,22 @@ monitoring:
   drift_window_size: 500
   drift_min_samples: 100
   latency_window_size: 1000
+
+ab_test:
+  # Off by default: the API serves the champion alone until this is switched on.
+  enabled: false
+  # Share of customers (0-100) routed to the challenger: hash(customer) % 100 < split_pct.
+  split_pct: 50
+  bundle_dir: models/ab
+  predictions_log: logs/ab_predictions.jsonl
+  feedback_log: logs/ab_feedback.jsonl
+  # Offline comparison: repeated stratified CV (repeats x training.cv_folds folds).
+  cv_repeats: 5
+  bootstrap_iterations: 2000
+  alpha: 0.05
+  # Online decision rule, fixed before any traffic is replayed.
+  power: 0.80
+  min_detectable_recall_diff: 0.05
+  # Illustrative business costs: replace with the bank's real figures.
+  cost_false_negative: 500  # a churner the model missed
+  cost_false_positive: 50   # a retention offer to a customer who would have stayed

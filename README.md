@@ -10,6 +10,10 @@ prediction API. It predicts whether a bank customer will close their account, ex
 (reproducibility, testing, tracking, serving and monitoring) rather than squeezing out
 the last point of accuracy.
 
+**Project focus: A/B testing and data drift.** A/B testing is covered in
+[Milestone 1](#hyperparameter-tuning-and-ab-testing); the full data drift study is planned
+for [Milestone 2](#roadmap).
+
 > MLOps course project · BS Computer Science, Fall 2026 · Gehna Bhatia (29054), M. Zayed Nauman (29047)
 
 ---
@@ -19,6 +23,8 @@ the last point of accuracy.
 - [Milestone 1 submission map](#milestone-1-submission-map)
 - [Results](#results)
 - [Best MLflow run](#best-mlflow-run)
+- [SHAP in MLflow](#shap-in-mlflow)
+- [Hyperparameter tuning and A/B testing](#hyperparameter-tuning-and-ab-testing)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Commands](#commands)
@@ -41,7 +47,7 @@ Where to find each Milestone 1 requirement (tag `v1.0-milestone1`):
 | Pitch, architecture diagram, quick start, dataset and task | This README: [top](#churnai), [Architecture](#architecture), [Quickstart](#quickstart), [Dataset](#dataset-and-task) |
 | Data preparation, separate from training, with validation | [`src/churnai/pipelines/prepare_data.py`](src/churnai/pipelines/prepare_data.py), [`src/churnai/data/validation.py`](src/churnai/data/validation.py) |
 | Training script: held-out evaluation, versioned model artefact | [`src/churnai/pipelines/train.py`](src/churnai/pipelines/train.py) writes `models/<model>-v<version>-<run>.joblib` and `models/model.joblib` |
-| MLflow: 3+ runs, params and metrics, best run justified | 4 runs per training; see [Best MLflow run](#best-mlflow-run) |
+| MLflow: 3+ runs, params and metrics, best run justified | One run per candidate (7 per training); see [Best MLflow run](#best-mlflow-run) and [A/B testing](#hyperparameter-tuning-and-ab-testing) |
 | FastAPI service with `/predict`, Pydantic validation, `/docs` | [`src/churnai/api/app.py`](src/churnai/api/app.py) (app factory), [`routes.py`](src/churnai/api/routes.py), [`schemas.py`](src/churnai/api/schemas.py) |
 | pytest: data prep, model loading, prediction endpoint | [`tests/test_prepare_data.py`](tests/test_prepare_data.py), [`tests/test_training.py`](tests/test_training.py), [`tests/test_api.py`](tests/test_api.py); how to run in [Testing](#testing) |
 | Names, ERP IDs and member-to-task table | [`CONTRIBUTION.md`](CONTRIBUTION.md) |
@@ -72,23 +78,33 @@ Where to find each Milestone 1 requirement (tag `v1.0-milestone1`):
 
 ## Results
 
-Four candidates are compared with 5-fold stratified cross-validation on the training split.
-The champion is chosen by **CV ROC-AUC only**; the held-out test set (20%, never used for
-selection or threshold tuning) gives the unbiased estimate.
+Seven candidates are compared with 5-fold stratified cross-validation on the training split:
+four hand-picked settings plus three tuned with Optuna. The champion is chosen by
+**CV ROC-AUC only**, and the held-out test set (20%) gives the final estimate. It is never used
+to select the model or tune the threshold.
 
 | Model | CV ROC-AUC | Test ROC-AUC | Test PR-AUC | Test recall | Test precision |
 |---|---|---|---|---|---|
-| **XGBoost (shallow), champion** | **0.862** | **0.872** | 0.718 | 0.667 | 0.588 |
-| XGBoost (deep) | 0.861 | 0.871 | 0.720 | 0.699 | 0.589 |
-| LightGBM | 0.858 | 0.868 | 0.713 | 0.694 | 0.564 |
-| Logistic Regression (baseline) | 0.766 | 0.777 | 0.474 | 0.593 | 0.459 |
+| **LightGBM tuned, champion** | **0.8642** | **0.8779** | 0.7279 | 0.647 | 0.630 |
+| XGBoost tuned, challenger | 0.8636 | 0.8768 | 0.7260 | 0.677 | 0.601 |
+| XGBoost (shallow) | 0.8610 | 0.8749 | 0.7253 | 0.679 | 0.589 |
+| XGBoost (deep) | 0.8597 | 0.8713 | 0.7217 | 0.642 | 0.615 |
+| LightGBM (default) | 0.8580 | 0.8680 | 0.7131 | 0.694 | 0.564 |
+| Logistic Regression tuned | 0.7675 | 0.7786 | 0.4635 | 0.615 | 0.436 |
+| Logistic Regression (baseline) | 0.7663 | 0.7771 | 0.4736 | 0.593 | 0.459 |
 
-- The tree models beat the interpretable linear baseline by about **9 AUC points**,
-  because churn depends on non-linear effects such as age and number of products.
-- The decision threshold (0.61) is tuned on out-of-fold predictions to maximise F1. At
-  that threshold the model catches two thirds of churners.
-- CV and test scores agree closely, so there is no sign of overfitting. Any test AUC above
-  0.95 would abort training as suspected leakage.
+- **Trees beat the linear baseline** by about **0.10 AUC**, because churn depends on non-linear
+  effects such as age and number of products.
+- **The champion's threshold is 0.65,** tuned on out-of-fold predictions to maximise F1. At that
+  threshold it catches 65% of churners, and 63% of the customers it flags really leave.
+- **The estimates look reliable.** CV and test scores agree, and the champion's train-test
+  accuracy gap is small: 86.9% vs 85.1%. Any test AUC above 0.95 would abort training as
+  suspected leakage.
+- **The top three are statistically tied.** See the
+  [A/B testing results](#hyperparameter-tuning-and-ab-testing).
+
+These numbers come from one run on macOS with Python 3.12. Results vary slightly by machine: the
+Milestone 1 `xgb_shallow` run, on Windows, scored CV 0.8618 and test 0.8720.
 
 **Data findings** (from `make profile`, see `reports/data_profile.md`):
 
@@ -104,53 +120,194 @@ selection or threshold tuning) gives the unbiased estimate.
 
 ## Best MLflow run
 
-Every `make train` logs **one MLflow run per candidate** (4 runs) to the `churnai`
-experiment. Each run records:
+Every `make train` logs **one MLflow run per candidate** (7 runs) to the `churnai` experiment.
+Each run records:
 - the model family and hyperparameters
 - CV and test metrics: ROC-AUC, PR-AUC, F1, recall, precision, accuracy and Brier score
-- the tuned threshold, the confusion matrix, and the fitted model
+- the tuned threshold, the confusion matrix, the fitted model and SHAP plots
 
-The champion is registered as `churnai-classifier` with the alias `champion`.
+The champion is registered as `churnai-classifier` with the alias `champion`, and the runner-up
+with the alias `challenger`.
 
-**Best run: `xgb_shallow`**
+**Best run: `lgbm_tuned`**
 
 | | |
 |---|---|
-| MLflow run ID | `65c7276acf3e4faf90c5f0e29fbd9108` |
-| Registry version | `churnai-classifier` **v2** (`@champion`) |
-| Served as | `xgb_shallow-v2-65c7276a` (returned in every `/predict` response) |
-| Hyperparameters | `n_estimators=400, max_depth=3, learning_rate=0.05, subsample=0.9, colsample_bytree=0.8, scale_pos_weight=3.908` |
-| CV ROC-AUC (selection metric) | **0.862** |
-| Test ROC-AUC (held-out) | **0.872** |
-| Decision threshold | 0.61 (tuned on out-of-fold predictions for F1) |
+| MLflow run ID | `df37651df4af4ce59381be0ca5e992a1` |
+| Registry version | `churnai-classifier` **v3** (`@champion`) |
+| Served as | `lgbm_tuned-v3-df37651d` (returned in every `/predict` response) |
+| Hyperparameters | `n_estimators=647, num_leaves=12, learning_rate=0.010355, subsample=0.872595, subsample_freq=1, colsample_bytree=0.87054, min_child_samples=38, class_weight=balanced` |
+| CV ROC-AUC (selection metric) | **0.8642** |
+| Test ROC-AUC (held-out) | **0.8779** |
+| Decision threshold | 0.65 (tuned on out-of-fold predictions for F1) |
 
 **Why this run wins:**
 
 1. **It has the highest cross-validated ROC-AUC.** ROC-AUC is the primary metric because
    classes are imbalanced and retention teams rank customers by risk. Selection uses CV on
-   the training split only, so the test set stays an unbiased check.
-2. **It is the simplest of the near-tied models.** `xgb_deep` (0.861) and LightGBM (0.858)
-   are within 0.004 AUC, which is within fold-to-fold noise. The shallow model (depth 3)
-   wins and is the least likely to overfit, so there is no reason to prefer a more complex one.
-3. **The held-out test confirms it.** The test AUC (0.872) is consistent with CV (0.862),
-   so there is no sign of overfitting, and it is far below the 0.95 leakage alarm.
-4. **It clearly beats the interpretable baseline.** Logistic Regression scores 0.766, so
-   the gain over a linear model is about 0.09 AUC.
+   the training split only.
+2. **It ranks customers best on the held-out test,** with the highest test ROC-AUC (0.8779) and
+   PR-AUC (0.7279) of the seven candidates.
+3. **It overfits little.** Its train-test accuracy gap is 1.8 points, compared with 10.4 points
+   for default LightGBM.
+4. **It clearly beats the interpretable baseline.** Logistic Regression scores 0.7663, so the
+   gain over a linear model is about 0.10 AUC.
+
+The lead is small. The [A/B tests](#hyperparameter-tuning-and-ab-testing) find a statistical tie
+with `xgb_tuned` and `xgb_shallow`, so `lgbm_tuned` is the best of a tied group, not a clear
+winner.
 
 **Reproduce and inspect:**
 
 ```bash
-make data && make train   # logs 4 new runs and registers a new champion version
-make mlflow-ui            # http://127.0.0.1:5000 → experiment "churnai"
+make data && make tune && make train   # logs the runs and registers new versions
+make mlflow-ui                         # http://127.0.0.1:5000
 ```
 
-![MLflow runs table](docs/images/mlflow-runs.png)
-![MLflow run comparison](docs/images/mlflow-compare.png)
-![MLflow model registry](docs/images/mlflow-registry.png)
+Runs across the tuning, training and A/B experiments:
+
+![MLflow runs across the churnai-tuning, churnai and churnai-ab experiments](docs/images/mlflow-runs.png)
+
+Hyperparameters and metrics compared across candidates:
+
+![MLflow comparison of candidate hyperparameters and metrics](docs/images/mlflow-compare.png)
+
+Registry with the `champion` and `challenger` aliases:
+
+![MLflow registry with churnai-classifier v3 as champion and v4 as challenger](docs/images/mlflow-registry.png)
 
 > **Note on the MLflow requirement for LLM projects:** ChurnAI is a classical tabular ML
 > project, so experiments compare *training runs* (model families and hyperparameters)
 > rather than prompts, LLMs or temperature settings.
+
+---
+
+## SHAP in MLflow
+
+Every candidate run in the `churnai` experiment has a `shap/` folder in its **Artifacts** tab:
+
+| File | Shows |
+|---|---|
+| `shap_bar.png` | Average impact of each feature on the model's output |
+| `shap_beeswarm.png` | How each feature's values push churn risk up or down, one dot per customer |
+| `shap_importance.csv` | The mean absolute SHAP value of each feature |
+
+`make train` logs these automatically. `make shap-backfill` adds them to older runs, and only
+adds files: params, metrics, models and aliases stay the same. Runs that already have a report
+are skipped. Tuning trials store no model, so they have no report.
+
+Values are in log-odds and use up to 2,000 rows of the training split, so the test split stays
+untouched. Text features such as `Geography` are grey in the beeswarm because they have no
+low-to-high scale. For one customer's explanation, use `POST /explain`.
+
+**What the champion (`lgbm_tuned`) relies on:** `NumOfProducts` (0.718) and `Age` (0.714) lead,
+followed by `IsActiveMember` (0.351) and `Gender` (0.250). Customers with 3 or 4 products get by
+far the largest push towards churn. Logistic regression gives `NumOfProducts` almost no weight
+(0.039), because the effect is not linear; this helps explain why the tree models beat it.
+SHAP shows what drives the model's predictions, not what causes customers to leave.
+
+---
+
+## Hyperparameter tuning and A/B testing
+
+Three steps, all tracked in MLflow on the current dataset:
+
+```bash
+make tune        # MLflow experiment churnai-tuning
+make train       # MLflow experiment churnai
+make compare     # MLflow experiment churnai-ab (offline A/B)
+make ab-online   # MLflow experiment churnai-ab (simulated online A/B)
+```
+
+**Result: `lgbm_tuned` is the champion, but it is statistically tied with `xgb_tuned` and
+`xgb_shallow`.** It is significantly better than `xgb_deep`, `lgbm_default` and both logistic
+regressions, so tuning did improve LightGBM. The numbers below come from one run on macOS with
+Python 3.12; AUCs differ slightly from the Milestone 1 table above, which came from another
+machine.
+
+### 1. Tuning
+
+`make tune` runs one Optuna study per family (30 trials each) on the same 5-fold CV ROC-AUC
+that `make train` selects on, using the training split only. The first 10 trials of each study
+are random; the TPE sampler uses the results from then on. Each trial is a nested MLflow run
+under its family's parent run. Select the trials in the MLflow UI and choose *Compare* for the
+parallel-coordinates chart. Search spaces are in `configs/tuning.yaml`.
+
+| Candidate | CV ROC-AUC | Test ROC-AUC | Test F1 | Threshold |
+|---|---|---|---|---|
+| **`lgbm_tuned` (champion, `@champion`)** | **0.8642** | 0.8779 | 0.639 | 0.65 |
+| `xgb_tuned` (runner-up, `@challenger`) | 0.8636 | 0.8768 | 0.637 | 0.61 |
+| `xgb_shallow` (Milestone 1 champion) | 0.8610 | 0.8749 | 0.631 | 0.60 |
+| `xgb_deep` | 0.8597 | 0.8713 | 0.628 | 0.60 |
+| `lgbm_default` | 0.8580 | 0.8680 | 0.622 | 0.51 |
+| `logreg_tuned` | 0.7675 | 0.7786 | 0.510 | 0.56 |
+| `logreg_baseline` | 0.7663 | 0.7771 | 0.518 | 0.59 |
+
+### 2. Offline A/B: real difference or noise?
+
+`make compare` tests the champion (A) against every other candidate (B). The verdict comes from
+5×5 repeated stratified CV with identical folds, using the corrected resampled t-test
+(Nadeau–Bengio) with a Holm adjustment for the six comparisons. The test-split columns confirm
+the verdict and never select a model. Differences are B − A.
+
+| B | CV AUC (A / B) | t-test p (Holm) | Test AUC diff [95% CI] | McNemar p | Verdict |
+|---|---|---|---|---|---|
+| `xgb_tuned` | 0.8634 / 0.8636 | 0.86 | −0.0011 [−0.0038, +0.0016] | 0.033 | No significant difference |
+| `xgb_shallow` | 0.8634 / 0.8620 | 0.68 | −0.0030 [−0.0074, +0.0015] | 0.004 | No significant difference |
+| `xgb_deep` | 0.8634 / 0.8594 | 0.044 | −0.0067 [−0.0119, −0.0019] | 0.20 | A better |
+| `lgbm_default` | 0.8634 / 0.8579 | 0.016 | −0.0099 [−0.0161, −0.0044] | <0.001 | A better |
+| `logreg_tuned` | 0.8634 / 0.7672 | <0.001 | −0.0994 [−0.1202, −0.0790] | <0.001 | A better |
+| `logreg_baseline` | 0.8634 / 0.7658 | <0.001 | −0.1008 [−0.1219, −0.0806] | <0.001 | A better |
+
+How to read this:
+
+- **The lead over `xgb_tuned` disappears on fresh folds:** 0.8642 vs 0.8636 becomes 0.8634 vs
+  0.8636. The first gap partly reflects picking the best of 30 trials on those exact folds.
+- **The wins may be slightly flattered,** because the champion was itself selected as the highest
+  scorer. The `xgb_deep` result (adjusted p = 0.044) is close to the 0.05 line.
+- **McNemar compares decisions, not ranking.** The models use different thresholds, so a small
+  p-value can simply mean that they trade recall for precision differently.
+
+### 3. Online A/B: splitting traffic
+
+With `ab_test.enabled` (or `CHURNAI_AB_ENABLED=true`), the API serves the bundles behind the
+`champion` (A) and `challenger` (B) aliases:
+
+- **Fetching the bundles:** `make ab-fetch` downloads them, so MLflow stays out of the serving
+  runtime.
+- **Routing:** send `X-Customer-ID`; `sha256(id) % 100 < split_pct` picks B, so a customer always
+  gets the same model. Requests without an ID, and `/predict/batch`, stay on A and outside the
+  experiment.
+- **Response and stats:** `/predict` returns `model_variant`, and `/metrics` reports latency and
+  drift per variant.
+- **Outcomes:** `POST /feedback` records what really happened. Exposures and outcomes go to
+  `logs/ab_*.jsonl`.
+
+`make ab-online` simulates this by replaying the 2,000 test customers through the real routes.
+The decision rule is fixed in `configs/config.yaml` before replay: promote B only if the test has
+enough power, recall is significantly higher (two-proportion z-test) and cost is no worse.
+
+| | A: `lgbm_tuned` | B: `xgb_tuned` |
+|---|---|---|
+| Customers / churners | 972 / 208 | 1,028 / 200 |
+| Recall | 0.644 | 0.680 |
+| Precision | 0.650 | 0.584 |
+| Cost per customer (FN 500, FP 50) | 41.77 | 35.85 |
+
+**Verdict: inconclusive (underpowered).**
+
+- **Power:** detecting a 5-point recall change needs 1,451 churners per arm, about 7,122
+  customers per arm, or about 14,200 in total. That is more than the whole dataset. The 200
+  churners in the smaller arm can only detect about 13 points.
+- **Observed differences:** recall differs by +3.6 points (p = 0.45) and cost by −5.92
+  (95% CI −17.64 to +5.01). Neither is significant, and the arms hold different customers.
+- **Limits of this simulation:** it is a replay of the test split rather than real traffic, the
+  costs are illustrative placeholders, and it reuses the test set, so that set is no longer
+  completely untouched.
+
+**Shadow mode** (not implemented) is a safer variant: B scores every request while A's answer is
+returned. Customers never see B, and both models score the same people, so the comparison is
+paired and needs far less data.
 
 ---
 
@@ -163,7 +320,7 @@ deployed model maps back to exactly one MLflow run.
 flowchart LR
     subgraph Training pipeline
         A[Raw CSV] --> B[prepare_data<br/>validate · drop leakage · stratified split]
-        B --> C[train<br/>4 candidates · 5-fold CV · threshold tuning]
+        B --> C[train<br/>7 candidates · 5-fold CV · threshold tuning]
         C --> D[(MLflow<br/>runs + model registry)]
         C --> E[models/model.joblib<br/>pipeline · threshold · drift reference · SHAP background]
     end
@@ -242,13 +399,18 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 |---|---|---|
 | `setup` | `pip install -r requirements/dev.txt && pip install -e . --no-deps` | Install pinned dependencies and the package |
 | `lint` | `ruff check src tests scripts` | Static checks |
-| `test` | `pytest` | Full suite (74 tests) |
+| `test` | `pytest` | Full suite (109 tests) |
 | `test-fast` | `pytest -m "not slow"` | Unit tests only (seconds) |
 | `coverage` | `pytest --cov=churnai --cov-report=term-missing` | Suite with coverage report |
 | `check` | lint + test | The gate CI runs |
 | `profile` | `python -m churnai.pipelines.profile_data` | EDA report and leakage scan |
 | `data` | `python -m churnai.pipelines.prepare_data` | Validate and split data |
 | `train` | `python -m churnai.pipelines.train` | Train, track and register the champion |
+| `tune` | `python -m churnai.pipelines.tune` | Optuna studies; best params become candidates in `configs/models.yaml` |
+| `shap-backfill` | `python -m churnai.pipelines.backfill_shap` | Add SHAP plots to earlier MLflow candidate runs |
+| `compare` | `python -m churnai.pipelines.compare_models` | Offline A/B: champion vs every candidate, with statistical tests |
+| `ab-fetch` | `python -m churnai.pipelines.fetch_ab_bundles` | Download the champion and challenger bundles from their MLflow aliases |
+| `ab-online` | `python -m churnai.pipelines.ab_online` | Simulated online A/B: power check, replay, verdict |
 | `pipeline` | data + train | End-to-end retrain |
 | `serve` | `uvicorn churnai.api.app:create_app --factory --port 8000` | Run the API |
 | `mlflow-ui` | `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000` | Browse experiments |
@@ -261,7 +423,10 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 |---|---|
 | `profile` | `reports/data_profile.md` |
 | `data` | `data/processed/{train,test}.csv`, `summary.json`; rejected rows (with reasons) in `data/rejected/` |
-| `train` | `models/model.joblib` (served), `models/<model>-v<version>-<run>.joblib` (versioned copy), `models/metadata.json`, `reports/leaderboard.csv`, one MLflow run per candidate, champion registered as `churnai-classifier@champion` |
+| `train` | `models/model.joblib` (served), `models/<model>-v<version>-<run>.joblib` (versioned copy), `models/metadata.json`, `reports/leaderboard.csv`, one MLflow run per candidate (with SHAP plots), champion registered as `churnai-classifier@champion`, runner-up as `@challenger` |
+| `tune` | `reports/tuning.csv`, tuned candidates in `configs/models.yaml`, MLflow experiment `churnai-tuning` |
+| `compare` | `reports/ab_offline.{csv,md}`, MLflow experiment `churnai-ab` |
+| `ab-online` | `reports/ab_online.md`, `logs/ab_*.jsonl`, MLflow experiment `churnai-ab` |
 
 ---
 
@@ -272,8 +437,9 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 | `POST` | `/predict` | Churn probability, label and model version for one customer |
 | `POST` | `/predict/batch` | Same for up to 1,000 customers |
 | `POST` | `/explain` | Prediction plus the top 5 features driving it (SHAP, log-odds) |
+| `POST` | `/feedback` | Report a customer's real outcome during an A/B test (404 when no test is running) |
 | `GET` | `/health` | Liveness and whether a model is loaded |
-| `GET` | `/metrics` | Request counts, error counts, latency (avg/p50/p95/p99), drift report |
+| `GET` | `/metrics` | Request counts, error counts, latency (avg/p50/p95/p99), drift report; per-variant stats during an A/B test |
 | `GET` | `/model` | Full metadata and lineage of the served model |
 | `GET` | `/docs` | Interactive Swagger UI |
 
@@ -307,15 +473,17 @@ Invoke-RestMethod http://127.0.0.1:8000/predict -Method Post -Body $c -ContentTy
 
 ```json
 {
-  "churn_probability": 0.6481,
-  "churn_prediction": true,
-  "threshold": 0.61,
-  "model_version": "xgb_shallow-v2-65c7276a"
+  "churn_probability": 0.6445,
+  "churn_prediction": false,
+  "threshold": 0.65,
+  "model_version": "lgbm_tuned-v3-df37651d",
+  "model_variant": "A"
 }
 ```
 
 `model_version` is `<model>-v<registry version>-<MLflow run id>`, so any prediction can be
-traced back to the exact training run.
+traced back to the exact training run. `model_variant` is `A` unless an A/B test routes the
+customer to the challenger (`B`).
 
 ### Example: explain
 
@@ -323,15 +491,15 @@ traced back to the exact training run.
 
 ```json
 {
-  "churn_probability": 0.6481,
-  "base_value": 0.0256,
+  "churn_probability": 0.6445,
+  "base_value": -0.6654,
   "units": "log_odds",
   "top_features": [
-    {"feature": "NumOfProducts",  "value": 1,        "shap_value":  0.5096, "direction": "increases_churn_risk"},
-    {"feature": "IsActiveMember", "value": 1,        "shap_value": -0.3841, "direction": "decreases_churn_risk"},
-    {"feature": "Gender",         "value": "Female", "shap_value":  0.2637, "direction": "increases_churn_risk"},
-    {"feature": "Geography",      "value": "France", "shap_value": -0.1503, "direction": "decreases_churn_risk"},
-    {"feature": "Balance",        "value": 0.0,      "shap_value":  0.1498, "direction": "increases_churn_risk"}
+    {"feature": "NumOfProducts",      "value": 1,        "shap_value":  0.728,  "direction": "increases_churn_risk"},
+    {"feature": "Age",                "value": 42,       "shap_value":  0.3687, "direction": "increases_churn_risk"},
+    {"feature": "IsActiveMember",     "value": 1,        "shap_value": -0.2984, "direction": "decreases_churn_risk"},
+    {"feature": "Gender",             "value": "Female", "shap_value":  0.2916, "direction": "increases_churn_risk"},
+    {"feature": "BalanceSalaryRatio", "value": 0.0,      "shap_value":  0.113,  "direction": "increases_churn_risk"}
   ]
 }
 ```
@@ -384,8 +552,8 @@ ChurnAI/
 │   ├── explain/               # SHAP explainer
 │   ├── monitoring/            # PSI drift detection, request metrics
 │   ├── api/                   # FastAPI app factory, routes, schemas, inference service
-│   └── pipelines/             # CLI entry points: profile_data, prepare_data, train
-├── tests/                     # 74 tests, about 95% line coverage
+│   └── pipelines/             # CLI entry points: profile_data, prepare_data, tune, train, compare_models, ab_online
+├── tests/                     # 109 tests
 ├── Makefile
 └── pyproject.toml             # package metadata, ruff and pytest configuration
 ```
@@ -432,6 +600,7 @@ Environment variables override config without editing files:
 | `CHURNAI_MODEL_DIR` | Where the model bundle is read and written |
 | `CHURNAI_MLFLOW_TRACKING_URI` | For example, a remote MLflow server |
 | `CHURNAI_MLFLOW_ARTIFACT_DIR` | MLflow artifact location |
+| `CHURNAI_AB_ENABLED` | `true` serves the champion and challenger as an A/B test |
 | `CHURNAI_LOG_LEVEL` | `DEBUG`, `INFO` (default), ... |
 | `CHURNAI_LOG_FORMAT` | `json` (default for the API) or `text` |
 
@@ -448,7 +617,7 @@ Environment variables override config without editing files:
 ## Testing
 
 ```bash
-make test        # full suite (74 tests)        or: pytest
+make test        # full suite (109 tests)       or: pytest
 make test-fast   # unit tests only, seconds     or: pytest -m "not slow"
 make coverage    # full suite with coverage     or: pytest --cov=churnai --cov-report=term-missing
 ```
@@ -494,8 +663,8 @@ run (**Actions → a run → Artifacts**).
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **1. Model and API** | Data pipeline, MLflow-tracked training, FastAPI `/predict` and `/explain`, tests, Makefile, README | ✅ |
-| **2. Deployment** | Multi-stage Docker image, extend CI to build and push to GHCR, Render deployment, RUNBOOK, rollback drill | 🔜 |
+| **1. Model, API and A/B testing** | Data pipeline, MLflow-tracked training and tuning, A/B testing, FastAPI `/predict` and `/explain`, tests, Makefile, README | ✅ |
+| **2. Data drift and deployment** | Data drift study on simulated future years, multi-stage Docker image, extend CI to build and push to GHCR, Render deployment, RUNBOOK, rollback drill | 🔜 |
 | **3. Final presentation** | Live demo of pipeline, MLflow, CI and API | ⏳ |
 
 `/health`, `/metrics`, JSON logging and PSI drift monitoring (Milestone 2 scope) are

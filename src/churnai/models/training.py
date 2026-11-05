@@ -17,8 +17,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.base import clone
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import RepeatedStratifiedKFold, StratifiedKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 
 from churnai.exceptions import LeakageSuspectedError
@@ -64,6 +64,27 @@ class ModelTrainer:
     def _cv(self) -> StratifiedKFold:
         return StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_seed)
 
+    def _pipeline(self, spec: ModelSpec, y: pd.Series) -> Pipeline:
+        ctx = BuildContext.from_target(y.to_numpy(), self.random_seed)
+        return build_pipeline(build_estimator(spec, ctx))
+
+    def cv_proba(self, spec: ModelSpec, X: pd.DataFrame, y: pd.Series) -> np.ndarray:
+        """Out-of-fold probabilities: the basis of model selection and threshold tuning."""
+        return cross_val_predict(
+            self._pipeline(spec, y), X, y, cv=self._cv(), method="predict_proba"
+        )[:, POSITIVE_CLASS_INDEX]
+
+    def repeated_cv_auc(self, spec: ModelSpec, X: pd.DataFrame, y: pd.Series, repeats: int) -> np.ndarray:
+        """ROC-AUC per fold over repeated CV. The same seed gives every model identical folds."""
+        folds = RepeatedStratifiedKFold(
+            n_splits=self.cv_folds, n_repeats=repeats, random_state=self.random_seed
+        )
+        scores = []
+        for train_idx, test_idx in folds.split(X, y):
+            pipeline = self._pipeline(spec, y).fit(X.iloc[train_idx], y.iloc[train_idx])
+            scores.append(roc_auc_score(y.iloc[test_idx], predict_positive(pipeline, X.iloc[test_idx])))
+        return np.array(scores)
+
     def evaluate(
         self,
         spec: ModelSpec,
@@ -75,9 +96,7 @@ class ModelTrainer:
         ctx = BuildContext.from_target(y_train.to_numpy(), self.random_seed)
         pipeline = build_pipeline(build_estimator(spec, ctx))
 
-        oof = cross_val_predict(
-            clone(pipeline), X_train, y_train, cv=self._cv(), method="predict_proba"
-        )[:, POSITIVE_CLASS_INDEX]
+        oof = self.cv_proba(spec, X_train, y_train)
         threshold = tune_threshold(y_train.to_numpy(), oof, self.threshold_metric)
 
         pipeline.fit(X_train, y_train)
@@ -98,6 +117,14 @@ def select_champion(results: list[CandidateResult], metric: str) -> CandidateRes
     if not results:
         raise ValueError("No candidate results to select from")
     return max(results, key=lambda r: r.score(metric))
+
+
+def select_challenger(
+    results: list[CandidateResult], metric: str, champion: CandidateResult
+) -> CandidateResult | None:
+    """The runner-up by the selection metric: what an A/B test should pit against the champion."""
+    others = [r for r in results if r is not champion]
+    return max(others, key=lambda r: r.score(metric)) if others else None
 
 
 def guard_against_leakage(result: CandidateResult, auc_threshold: float) -> None:

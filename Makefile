@@ -13,7 +13,7 @@ MLFLOW_PORT ?= 5000
 SRC_DIRS = src tests scripts
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format test test-fast coverage profile data train pipeline serve mlflow-ui check clean clean-artifacts
+.PHONY: help setup lint format test test-fast coverage profile data tune train shap-backfill compare ab-fetch ab-online pipeline serve mlflow-ui check clean clean-artifacts
 
 help:
 	@echo "ChurnAI - available targets:"
@@ -26,6 +26,11 @@ help:
 	@echo "  profile          EDA report and leakage scan - reports/data_profile.md"
 	@echo "  data             validate raw data and write train/test splits"
 	@echo "  train            train candidates, log to MLflow, save the champion"
+	@echo "  tune             Optuna studies, best params written to configs/models.yaml"
+	@echo "  shap-backfill    add SHAP plots to earlier MLflow candidate runs"
+	@echo "  compare          offline A/B: champion vs every candidate, statistical tests"
+	@echo "  ab-fetch         download the champion and challenger bundles from MLflow"
+	@echo "  ab-online        simulated online A/B: power check, replay, verdict"
 	@echo "  pipeline         data + train"
 	@echo "  serve            run the API on http://$(HOST):$(PORT) - docs at /docs"
 	@echo "  mlflow-ui        browse experiments on http://127.0.0.1:$(MLFLOW_PORT)"
@@ -67,6 +72,21 @@ data:
 train:
 	$(PYTHON) -m churnai.pipelines.train
 
+tune:
+	$(PYTHON) -m churnai.pipelines.tune
+
+shap-backfill:
+	$(PYTHON) -m churnai.pipelines.backfill_shap
+
+compare:
+	$(PYTHON) -m churnai.pipelines.compare_models
+
+ab-fetch:
+	$(PYTHON) -m churnai.pipelines.fetch_ab_bundles
+
+ab-online:
+	$(PYTHON) -m churnai.pipelines.ab_online
+
 pipeline: data train
 
 # ---------------------------------------------------------------- serving ---
@@ -82,5 +102,5 @@ clean:
 	$(PYTHON) -c "import pathlib; [p.unlink() for p in pathlib.Path('.').glob('.coverage*')]"
 
 clean-artifacts:
-	$(PYTHON) -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('data/processed', 'data/rejected', 'models', 'reports', 'mlartifacts')]"
+	$(PYTHON) -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('data/processed', 'data/rejected', 'models', 'reports', 'mlartifacts', 'logs')]"
 	$(PYTHON) -c "import pathlib; pathlib.Path('mlflow.db').unlink(missing_ok=True)"

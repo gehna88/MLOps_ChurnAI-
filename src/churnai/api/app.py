@@ -12,11 +12,13 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from starlette.routing import Match
 
 from churnai import __version__
+from churnai.api.ab import VARIANT_A, VARIANT_B, ABExperiment
 from churnai.api.routes import router
 from churnai.api.service import ModelService
 from churnai.config import Settings, get_settings
@@ -41,25 +43,46 @@ def _route_template(request: Request) -> str:
     return UNMATCHED_ROUTE
 
 
-def _load_service(settings: Settings, bundle: ModelBundle | None) -> ModelService | None:
+def _load_service(
+    settings: Settings, bundle: ModelBundle | None, path: Path, variant: str = VARIANT_A
+) -> ModelService | None:
     try:
-        bundle = bundle or ModelBundle.load(settings.model_path)
-        service = ModelService(bundle, settings)
+        bundle = bundle or ModelBundle.load(path)
+        service = ModelService(bundle, settings, variant)
     except ChurnAIError as exc:
         # Start anyway so /health can report the problem instead of crash-looping.
         logger.error("Model unavailable: %s", exc)
         return None
-    logger.info("Model loaded", extra={"fields": {"model_version": service.version}})
+    logger.info("Model loaded", extra={"fields": {"model_version": service.version, "variant": variant}})
     return service
 
 
-def create_app(settings: Settings | None = None, bundle: ModelBundle | None = None) -> FastAPI:
+def _load_experiment(
+    settings: Settings, control: ModelService | None, challenger: ModelBundle | None
+) -> ABExperiment | None:
+    """Both variants or no experiment: without a challenger the API serves the champion alone."""
+    treatment = _load_service(settings, challenger, settings.ab_bundle_path(VARIANT_B), VARIANT_B)
+    if control is None or treatment is None:
+        logger.error("A/B test disabled: a variant is unavailable. Run `make ab-fetch`.")
+        return None
+    return ABExperiment.from_settings(settings, control, treatment)
+
+
+def create_app(
+    settings: Settings | None = None,
+    bundle: ModelBundle | None = None,
+    challenger: ModelBundle | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
     configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.service = _load_service(settings, bundle)
+        ab_enabled = settings.ab_test.enabled
+        path = settings.ab_bundle_path(VARIANT_A) if ab_enabled else settings.model_path
+        app.state.service = _load_service(settings, bundle, path)
+        if ab_enabled:
+            app.state.ab = _load_experiment(settings, app.state.service, challenger)
         yield
 
     app = FastAPI(
@@ -70,6 +93,7 @@ def create_app(settings: Settings | None = None, bundle: ModelBundle | None = No
     )
     app.state.settings = settings
     app.state.service = None
+    app.state.ab = None
     app.state.metrics = RequestMetrics(settings.monitoring.latency_window_size)
     app.state.started_at = time.monotonic()
     app.include_router(router)
@@ -88,6 +112,9 @@ def create_app(settings: Settings | None = None, bundle: ModelBundle | None = No
             latency_ms = (time.perf_counter() - start) * MS_PER_SECOND
             route = _route_template(request)
             app.state.metrics.record(route, status_code, latency_ms)
+            variant = getattr(request.state, "variant", None)
+            if app.state.ab and variant:
+                app.state.ab.metrics[variant].record(route, status_code, latency_ms)
             logger.info(
                 "request",
                 extra={"fields": {

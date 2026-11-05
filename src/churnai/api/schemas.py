@@ -65,10 +65,25 @@ class PredictionResponse(BaseModel):
     churn_prediction: bool
     threshold: float
     model_version: str
+    model_variant: str = "A"
 
 
 class BatchPredictionResponse(BaseModel):
     predictions: list[PredictionResponse]
+
+
+class FeedbackRequest(BaseModel):
+    """The observed outcome for a customer, reported once it is known."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str = Field(min_length=1, max_length=64)
+    exited: Literal[0, 1]
+
+
+class FeedbackResponse(BaseModel):
+    status: Literal["recorded"]
+    customer_id: str
 
 
 class FeatureContributionOut(BaseModel):

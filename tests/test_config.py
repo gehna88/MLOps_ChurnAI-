@@ -27,6 +27,12 @@ def test_env_overrides_take_precedence(tmp_path: Path, monkeypatch) -> None:
     assert settings.model_path.parent == (tmp_path / "elsewhere").resolve()
 
 
+def test_ab_test_can_be_enabled_from_the_environment(tmp_path: Path, monkeypatch) -> None:
+    assert load_settings(config_path=CONFIG_FILE, root=tmp_path).ab_test.enabled is False
+    monkeypatch.setenv("CHURNAI_AB_ENABLED", "true")
+    assert load_settings(config_path=CONFIG_FILE, root=tmp_path).ab_test.enabled is True
+
+
 def test_missing_config_raises(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
         load_settings(config_path=tmp_path / "nope.yaml", root=tmp_path)

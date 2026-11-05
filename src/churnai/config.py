@@ -31,6 +31,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "CHURNAI_MLFLOW_TRACKING_URI": ("mlflow", "tracking_uri"),
     "CHURNAI_MLFLOW_ARTIFACT_DIR": ("mlflow", "artifact_dir"),
     "CHURNAI_MODEL_DIR": ("paths", "model_dir"),
+    "CHURNAI_AB_ENABLED": ("ab_test", "enabled"),
 }
 
 
@@ -60,6 +61,7 @@ class DataConfig(_Frozen):
 
 class TrainingConfig(_Frozen):
     models_config: Path
+    tuning_config: Path
     cv_folds: int = Field(ge=2)
     primary_metric: str
     leakage_auc_threshold: float = Field(gt=0.5, le=1.0)
@@ -71,13 +73,17 @@ class MlflowConfig(_Frozen):
     artifact_dir: Path
     pip_requirements: Path
     experiment_name: str
+    tuning_experiment: str
+    ab_experiment: str
     registered_model_name: str
     champion_alias: str
+    challenger_alias: str
 
 
 class ExplainConfig(_Frozen):
     top_k: int = Field(ge=1)
     background_size: int = Field(ge=10)
+    report_sample_size: int = Field(ge=10)
 
 
 class MonitoringConfig(_Frozen):
@@ -86,6 +92,21 @@ class MonitoringConfig(_Frozen):
     drift_window_size: int = Field(ge=1)
     drift_min_samples: int = Field(ge=1)
     latency_window_size: int = Field(ge=1)
+
+
+class ABTestConfig(_Frozen):
+    enabled: bool
+    split_pct: int = Field(ge=0, le=100)
+    bundle_dir: Path
+    predictions_log: Path
+    feedback_log: Path
+    cv_repeats: int = Field(ge=2)
+    bootstrap_iterations: int = Field(ge=100)
+    alpha: float = Field(gt=0, lt=1)
+    power: float = Field(gt=0, lt=1)
+    min_detectable_recall_diff: float = Field(gt=0, lt=1)
+    cost_false_negative: float = Field(ge=0)
+    cost_false_positive: float = Field(ge=0)
 
 
 class Settings(_Frozen):
@@ -99,6 +120,7 @@ class Settings(_Frozen):
     mlflow: MlflowConfig
     explain: ExplainConfig
     monitoring: MonitoringConfig
+    ab_test: ABTestConfig
 
     def resolve(self, relative: Path | str) -> Path:
         """Resolve a project-relative path against the project root."""
@@ -118,6 +140,10 @@ class Settings(_Frozen):
     def versioned_model_path(self, version: str) -> Path:
         """Immutable, versioned copy of a champion, kept for audit and rollback."""
         return self.model_dir / f"{version}.joblib"
+
+    def ab_bundle_path(self, variant: str) -> Path:
+        """Local copy of the bundle behind an A/B variant, fetched from its MLflow alias."""
+        return self.resolve(self.ab_test.bundle_dir) / f"{variant}.joblib"
 
     @property
     def processed_dir(self) -> Path:

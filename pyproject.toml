@@ -17,6 +17,11 @@ dependencies = []
 churnai-prepare = "churnai.pipelines.prepare_data:main"
 churnai-train = "churnai.pipelines.train:main"
 churnai-profile = "churnai.pipelines.profile_data:main"
+churnai-shap-backfill = "churnai.pipelines.backfill_shap:main"
+churnai-tune = "churnai.pipelines.tune:main"
+churnai-compare = "churnai.pipelines.compare_models:main"
+churnai-ab-fetch = "churnai.pipelines.fetch_ab_bundles:main"
+churnai-ab-online = "churnai.pipelines.ab_online:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

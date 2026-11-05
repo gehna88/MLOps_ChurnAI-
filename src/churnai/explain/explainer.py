@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import shap
 from sklearn.base import BaseEstimator
+from sklearn.pipeline import Pipeline
 
 from churnai.features.preprocessing import FEATURES_STEP, PREPROCESS_STEP, source_features
 from churnai.models.bundle import POSITIVE_CLASS_INDEX, ModelBundle
@@ -66,16 +67,29 @@ def _log_odds(proba: np.ndarray) -> np.ndarray:
 
 class ChurnExplainer:
     def __init__(self, bundle: ModelBundle, top_k: int) -> None:
-        pipeline = bundle.pipeline
+        self._setup(bundle.pipeline, bundle.metadata.feature_columns, bundle.background, top_k)
+
+    @classmethod
+    def from_pipeline(
+        cls, pipeline: Pipeline, feature_columns: list[str], background: pd.DataFrame, top_k: int
+    ) -> ChurnExplainer:
+        """For models that are not in a bundle, such as every candidate in an MLflow run."""
+        explainer = cls.__new__(cls)
+        explainer._setup(pipeline, feature_columns, background, top_k)
+        return explainer
+
+    def _setup(
+        self, pipeline: Pipeline, feature_columns: list[str], background: pd.DataFrame, top_k: int
+    ) -> None:
         self.top_k = top_k
         self._engineer = pipeline.named_steps[FEATURES_STEP]
         self._preprocess = pipeline.named_steps[PREPROCESS_STEP]
-        self._feature_columns = bundle.metadata.feature_columns
+        self._feature_columns = feature_columns
         self._sources = np.asarray(source_features(self._preprocess))
 
         self._model = pipeline[-1]
         if _is_linear(self._model):
-            background = self._preprocess.transform(self._engineer.transform(bundle.background))
+            background = self._preprocess.transform(self._engineer.transform(background))
             self._explainer = shap.LinearExplainer(self._model, background)
         else:
             self._explainer = shap.TreeExplainer(self._model)
@@ -93,6 +107,13 @@ class ChurnExplainer:
     def _aggregate(self, shap_row: np.ndarray) -> pd.Series:
         """Sum one-hot contributions into their parent feature."""
         return pd.Series(shap_row).groupby(self._sources).sum()
+
+    def contributions(self, X: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """SHAP values per customer and business feature, with those features' values."""
+        engineered = self._engineer.transform(X[self._feature_columns])
+        shap_values = _positive_class(self._explainer.shap_values(self._preprocess.transform(engineered)))
+        by_feature = pd.DataFrame(shap_values, columns=self._sources).T.groupby(level=0).sum().T
+        return by_feature, engineered.reset_index(drop=True)[list(by_feature.columns)]
 
     def explain(self, X: pd.DataFrame) -> list[Explanation]:
         engineered = self._engineer.transform(X[self._feature_columns])

@@ -25,11 +25,13 @@ class Prediction:
     churn_prediction: bool
     threshold: float
     model_version: str
+    model_variant: str = "A"
 
 
 class ModelService:
-    def __init__(self, bundle: ModelBundle, settings: Settings) -> None:
+    def __init__(self, bundle: ModelBundle, settings: Settings, variant: str = "A") -> None:
         self.bundle = bundle
+        self.variant = variant
         self.explainer = ChurnExplainer(bundle, top_k=settings.explain.top_k)
         self.drift = DriftMonitor(
             reference=bundle.reference,
@@ -51,7 +53,7 @@ class ModelService:
         labels = self.bundle.predict_label(proba)
         threshold = self.bundle.metadata.threshold
         return [
-            Prediction(round(float(p), PROBA_DECIMALS), bool(lbl), threshold, self.version)
+            Prediction(round(float(p), PROBA_DECIMALS), bool(lbl), threshold, self.version, self.variant)
             for p, lbl in zip(proba, labels, strict=True)
         ]
 
