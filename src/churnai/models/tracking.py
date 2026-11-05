@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from sklearn.pipeline import Pipeline
 
-from churnai.logging_utils import get_logger, reenable_project_loggers
+from churnai.logging_utils import get_logger, preserve_logging
 from churnai.models.bundle import POSITIVE_CLASS_INDEX
 
 logger = get_logger(__name__)
@@ -99,12 +99,13 @@ class MlflowTracker:
         self.champion_alias = champion_alias
         # Explicit requirements stop MLflow guessing (and warning about our local package).
         self.pip_requirements = applicable_requirements(pip_requirements) if pip_requirements else None
-        mlflow.set_tracking_uri(tracking_uri)
-        if mlflow.get_experiment_by_name(experiment) is None:
-            # Explicit artifact location; otherwise MLflow writes ./mlruns relative to the cwd.
-            mlflow.create_experiment(experiment, artifact_location=artifact_uri)
-        mlflow.set_experiment(experiment)
-        reenable_project_loggers()  # MLflow's DB migrations disable existing loggers
+        # A fresh MLflow database runs migrations that reconfigure logging; undo that.
+        with preserve_logging():
+            mlflow.set_tracking_uri(tracking_uri)
+            if mlflow.get_experiment_by_name(experiment) is None:
+                # Explicit artifact location; otherwise MLflow writes ./mlruns relative to the cwd.
+                mlflow.create_experiment(experiment, artifact_location=artifact_uri)
+            mlflow.set_experiment(experiment)
 
     @contextmanager
     def run(self, name: str, tags: dict[str, str] | None = None) -> Iterator[str | None]:
@@ -138,10 +139,12 @@ class MlflowTracker:
 
     def register(self, run_id: str) -> str | None:
         uri = f"runs:/{run_id}/{self.MODEL_ARTIFACT_PATH}"
-        version = self._mlflow.register_model(uri, self.registered_model).version
-        self._mlflow.MlflowClient().set_registered_model_alias(
-            self.registered_model, self.champion_alias, version
-        )
+        # The model registry store initialises lazily here and can reconfigure logging too.
+        with preserve_logging():
+            version = self._mlflow.register_model(uri, self.registered_model).version
+            self._mlflow.MlflowClient().set_registered_model_alias(
+                self.registered_model, self.champion_alias, version
+            )
         logger.info("Registered %s v%s as '%s'", self.registered_model, version,
                     self.champion_alias)
         return str(version)

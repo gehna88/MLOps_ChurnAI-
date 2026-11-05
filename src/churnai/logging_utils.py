@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -56,16 +58,30 @@ PROJECT_LOGGER_PREFIX = "churnai"
 
 
 def reenable_project_loggers() -> None:
-    """Undo third-party ``logging.config.fileConfig`` calls that disable our loggers.
-
-    MLflow runs Alembic DB migrations on first use, and Alembic's logging config
-    disables every existing logger - which silently swallows the pipeline's output.
-    """
+    """Undo third-party ``logging.config.fileConfig`` calls that disable our loggers."""
     for name, logger in logging.root.manager.loggerDict.items():
         if isinstance(logger, logging.Logger) and (
             name.startswith(PROJECT_LOGGER_PREFIX) or name == "__main__"
         ):
             logger.disabled = False
+
+
+@contextmanager
+def preserve_logging() -> Iterator[None]:
+    """Restore our logging setup after third-party code reconfigures it.
+
+    When MLflow creates a fresh database it runs Alembic migrations, whose logging
+    config replaces the root handler, raises the root level to WARNING and disables
+    existing loggers, silently swallowing the pipeline's INFO output.
+    """
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    try:
+        yield
+    finally:
+        root.handlers[:] = handlers
+        root.setLevel(level)
+        reenable_project_loggers()
 
 
 def get_logger(name: str) -> logging.Logger:
