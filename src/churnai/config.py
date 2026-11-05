@@ -112,7 +112,12 @@ class Settings(_Frozen):
 
     @property
     def model_path(self) -> Path:
+        """The bundle the API serves: always the latest champion."""
         return self.model_dir / "model.joblib"
+
+    def versioned_model_path(self, version: str) -> Path:
+        """Immutable, versioned copy of a champion, kept for audit and rollback."""
+        return self.model_dir / f"{version}.joblib"
 
     @property
     def processed_dir(self) -> Path:

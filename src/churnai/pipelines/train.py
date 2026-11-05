@@ -6,7 +6,8 @@ Outputs
 -------
 * One MLflow run per candidate (params, CV + test metrics, confusion matrix, model)
 * The champion registered in the MLflow Model Registry with the ``champion`` alias
-* ``models/model.joblib``  - the bundle the API serves
+* ``models/model.joblib``  - the bundle the API serves (latest champion)
+* ``models/<version>.joblib`` - immutable versioned copy, e.g. ``xgb_shallow-v2-65c7276a.joblib``
 * ``models/metadata.json`` - human-readable lineage of that bundle
 * ``reports/leaderboard.csv`` - side-by-side comparison of all candidates
 """
@@ -122,6 +123,7 @@ def run(settings: Settings, tracker: ExperimentTracker | None = None) -> Trainin
     run_id = run_ids[champion.name]
     registered_version = tracker.register(run_id) if run_id else None
     bundle = build_bundle(settings, champion, X_train, run_id, registered_version)
+    bundle.save(settings.versioned_model_path(bundle.metadata.version))
     bundle_path = bundle.save(settings.model_path)
     io.write_json(bundle.metadata.to_dict(), settings.model_dir / "metadata.json")
 

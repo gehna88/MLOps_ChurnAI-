@@ -33,6 +33,13 @@ def test_training_outputs_exist(trained_project: Settings) -> None:
     assert len(leaderboard) == len(FAST_MODELS["candidates"])
 
 
+def test_versioned_copy_matches_served_model(trained_project: Settings) -> None:
+    served = ModelBundle.load(trained_project.model_path)
+    versioned_path = trained_project.versioned_model_path(served.metadata.version)
+    assert versioned_path.is_file()
+    assert ModelBundle.load(versioned_path).metadata == served.metadata
+
+
 def test_champion_is_best_by_cv_auc_and_reasonable(trained_project: Settings) -> None:
     leaderboard = pd.read_csv(trained_project.resolve("reports") / "leaderboard.csv")
     bundle = ModelBundle.load(trained_project.model_path)
