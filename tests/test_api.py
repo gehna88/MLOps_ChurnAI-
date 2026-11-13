@@ -31,6 +31,16 @@ def test_health_ok(client: TestClient, bundle: ModelBundle) -> None:
     assert body["status"] == "ok"
     assert body["model_loaded"] is True
     assert body["model_version"] == bundle.metadata.version
+    assert body["build"] == "local"
+
+
+def test_health_reports_image_build(
+    trained_project: Settings, bundle: ModelBundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker images set CHURNAI_BUILD to their tag so deploys and rollbacks are verifiable."""
+    monkeypatch.setenv("CHURNAI_BUILD", "sha-1a2b3c4")
+    with TestClient(create_app(trained_project, bundle)) as test_client:
+        assert test_client.get("/health").json()["build"] == "sha-1a2b3c4"
 
 
 def test_predict_returns_probability_label_and_version(client: TestClient, customer: dict) -> None:

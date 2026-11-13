@@ -1,0 +1,15 @@
+# Allow-list: the build context contains only what the Dockerfile copies.
+# Everything else (data, MLflow store, venvs, tests, reports) stays out of the image
+# and out of the context sent to the Docker daemon.
+*
+
+!pyproject.toml
+!README.md
+!requirements/serve.txt
+!src/
+!configs/config.yaml
+!scripts/healthcheck.py
+!models/model.joblib
+
+**/__pycache__
+**/*.py[cod]

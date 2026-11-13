@@ -11,9 +11,11 @@ HOST ?= 127.0.0.1
 PORT ?= 8000
 MLFLOW_PORT ?= 5000
 SRC_DIRS = src tests scripts
+IMAGE ?= churnai
+TAG ?= local
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format test test-fast coverage profile data tune train shap-backfill compare ab-fetch ab-online pipeline serve mlflow-ui check clean clean-artifacts
+.PHONY: help setup lint format test test-fast coverage profile data tune train shap-backfill compare ab-fetch ab-online simulate-batches pipeline serve mlflow-ui docker-build docker-run check clean clean-artifacts
 
 help:
 	@echo "ChurnAI - available targets:"
@@ -31,9 +33,12 @@ help:
 	@echo "  compare          offline A/B: champion vs every candidate, statistical tests"
 	@echo "  ab-fetch         download the champion and challenger bundles from MLflow"
 	@echo "  ab-online        simulated online A/B: power check, replay, verdict"
+	@echo "  simulate-batches drifted future-year batches in data/batches for the drift study"
 	@echo "  pipeline         data + train"
 	@echo "  serve            run the API on http://$(HOST):$(PORT) - docs at /docs"
 	@echo "  mlflow-ui        browse experiments on http://127.0.0.1:$(MLFLOW_PORT)"
+	@echo "  docker-build     build the API image $(IMAGE):$(TAG) - needs a trained model"
+	@echo "  docker-run       run that image on http://localhost:$(PORT)"
 	@echo "  check            lint + test, the same gate CI runs"
 	@echo "  clean            remove tool caches"
 	@echo "  clean-artifacts  remove generated data, models, reports and MLflow store"
@@ -87,6 +92,9 @@ ab-fetch:
 ab-online:
 	$(PYTHON) -m churnai.pipelines.ab_online
 
+simulate-batches:
+	$(PYTHON) -m churnai.pipelines.simulate_batches
+
 pipeline: data train
 
 # ---------------------------------------------------------------- serving ---
@@ -96,11 +104,18 @@ serve:
 mlflow-ui:
 	$(PYTHON) -m mlflow ui --backend-store-uri sqlite:///mlflow.db --port $(MLFLOW_PORT)
 
+# ----------------------------------------------------------------- docker ---
+docker-build:
+	docker build --build-arg BUILD=$(TAG) -t $(IMAGE):$(TAG) .
+
+docker-run:
+	docker run --rm -p $(PORT):8000 $(IMAGE):$(TAG)
+
 # ---------------------------------------------------------------- cleanup ---
 clean:
 	$(PYTHON) -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('.pytest_cache', '.ruff_cache', 'htmlcov')]"
 	$(PYTHON) -c "import pathlib; [p.unlink() for p in pathlib.Path('.').glob('.coverage*')]"
 
 clean-artifacts:
-	$(PYTHON) -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('data/processed', 'data/rejected', 'models', 'reports', 'mlartifacts', 'logs')]"
+	$(PYTHON) -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('data/processed', 'data/rejected', 'data/batches', 'models', 'reports', 'mlartifacts', 'logs')]"
 	$(PYTHON) -c "import pathlib; pathlib.Path('mlflow.db').unlink(missing_ok=True)"

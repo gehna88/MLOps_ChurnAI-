@@ -75,6 +75,7 @@ def health(request: Request) -> HealthResponse:
         status="ok" if service else "unavailable",
         model_loaded=service is not None,
         model_version=service.version if service else None,
+        build=request.app.state.build,
         uptime_seconds=round(time.monotonic() - request.app.state.started_at, 1),
     )
 

@@ -109,6 +109,28 @@ class ABTestConfig(_Frozen):
     cost_false_positive: float = Field(ge=0)
 
 
+class DriftYear(_Frozen):
+    """One simulated year. Neutral values (0, 1, 1, 0) reproduce the test split unchanged."""
+
+    name: str
+    age_tilt: float = Field(ge=0)  # log-weight per standard deviation of age
+    germany_weight: float = Field(gt=0)
+    inactive_weight: float = Field(gt=0)
+    salary_growth: float = Field(ge=0)  # e.g. 0.09 = salaries 9% higher
+
+    @property
+    def is_neutral(self) -> bool:
+        return (self.age_tilt, self.germany_weight, self.inactive_weight, self.salary_growth) == (
+            0, 1, 1, 0
+        )
+
+
+class DriftSimulationConfig(_Frozen):
+    batch_dir: Path
+    batch_size: int = Field(ge=1)
+    years: list[DriftYear] = Field(min_length=1)
+
+
 class Settings(_Frozen):
     """Root configuration object. Use :func:`get_settings` to obtain one."""
 
@@ -121,6 +143,7 @@ class Settings(_Frozen):
     explain: ExplainConfig
     monitoring: MonitoringConfig
     ab_test: ABTestConfig
+    drift_simulation: DriftSimulationConfig
 
     def resolve(self, relative: Path | str) -> Path:
         """Resolve a project-relative path against the project root."""
