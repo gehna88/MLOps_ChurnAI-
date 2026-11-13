@@ -76,3 +76,16 @@ ab_test:
   # Illustrative business costs: replace with the bank's real figures.
   cost_false_negative: 500  # a churner the model missed
   cost_false_positive: 50   # a retention offer to a customer who would have stayed
+
+drift_simulation:
+  # `make simulate-batches` writes one CSV per simulated year, for the drift study.
+  # Each year re-samples REAL unseen customers (the held-out test split), weighted
+  # towards older, German and inactive customers, so labels stay genuine and churn
+  # rises because those segments really churn more. A year with no shift is the
+  # test split itself, unchanged.
+  batch_dir: data/batches
+  batch_size: 2000
+  years:
+    - {name: "2026_holdout", age_tilt: 0.0, germany_weight: 1.0, inactive_weight: 1.0, salary_growth: 0.0}
+    - {name: "2027", age_tilt: 0.25, germany_weight: 2.0, inactive_weight: 1.0, salary_growth: 0.09}
+    - {name: "2028", age_tilt: 0.35, germany_weight: 2.8, inactive_weight: 1.8, salary_growth: 0.115}

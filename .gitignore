@@ -15,6 +15,7 @@ htmlcov/
 # Leading "/" anchors to the repo root, so src/churnai/models/ (source code) is NOT ignored.
 /data/processed/
 /data/rejected/
+/data/batches/
 /models/
 /reports/
 /mlflow.db
