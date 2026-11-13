@@ -103,6 +103,7 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "unavailable"]
     model_loaded: bool
     model_version: str | None
+    build: str
     uptime_seconds: float
 
 

@@ -8,6 +8,7 @@ Run locally:  ``uvicorn churnai.api.app:create_app --factory --port 8000``
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -30,6 +31,10 @@ from churnai.monitoring.metrics import RequestMetrics
 logger = get_logger("churnai.api")
 
 REQUEST_ID_HEADER = "X-Request-ID"
+# Set by the Docker build to the image tag (e.g. sha-1a2b3c4), so /health shows exactly
+# which image is live; useful after a deploy or a rollback.
+ENV_BUILD = "CHURNAI_BUILD"
+LOCAL_BUILD = "local"
 MS_PER_SECOND = 1000.0
 UNMATCHED_ROUTE = "unmatched"
 
@@ -92,6 +97,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.build = os.environ.get(ENV_BUILD, LOCAL_BUILD)
     app.state.service = None
     app.state.ab = None
     app.state.metrics = RequestMetrics(settings.monitoring.latency_window_size)
