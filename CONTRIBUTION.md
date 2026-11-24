@@ -43,10 +43,24 @@ I built the feature engineering and model factory, the FastAPI service, the test
 
 ---
 
-## Milestone 2: Containerisation, CI/CD and Deployment
+## Milestone 2: Containerisation, CI/CD and Deployment (`v2.0-milestone2`)
 
+| Member | Area | Tasks | Main files |
+|---|---|---|---|
+| **Gehna Bhatia** | Docker image | Multi-stage `python:3.11-slim` Dockerfile with serving-only dependencies, non-root user, `$PORT`, and a `HEALTHCHECK` on `/health`; allow-list `.dockerignore`; image tag reported by `/health` as `build` | `Dockerfile`, `.dockerignore`, `src/churnai/api/app.py`, `schemas.py` |
+| **Gehna Bhatia** | CI | Split CI into **lint**, **test** and **build** jobs; build trains from a clean clone, builds and smoke-tests the container, waits for the healthcheck, and pushes `sha-…`/`latest`/release tags to GHCR | `.github/workflows/ci.yml` |
+| **Gehna Bhatia** | Rollback | First version of the rollback workflow that redeploys any earlier image tag | `.github/workflows/rollback.yml` |
+| **Gehna Bhatia** | Drift batches | Reproducible simulated future years (re-weighted real, unseen customers) for the drift study | `src/churnai/pipelines/simulate_batches.py`, `configs/config.yaml`, `tests/test_simulate_batches.py` |
+| **Gehna Bhatia** | Monitoring and docs | `/stats` endpoint, landing page, Azure warm-up probe kept out of the stats; RUNBOOK; README deployment, Docker and monitoring sections with cURL examples | `src/churnai/api/routes.py`, `RUNBOOK.md`, `README.md` |
+| **M. Zayed Nauman** | Azure deployment | Azure for Students subscription; App Service Web App for Containers (Basic B1, Central India) running the GHCR image, port 8000, health check `/health`, publish credentials | Azure resource group `churnai-rg` |
+| **M. Zayed Nauman** | Continuous deployment | CI deploys each new image tag to Azure with `azure/webapps-deploy` and waits until `/health` reports it; rollback workflow moved from Render to Azure | `.github/workflows/ci.yml`, `.github/workflows/rollback.yml`, `scripts/wait_for_build.py`, `tests/test_wait_for_build.py` |
+| **M. Zayed Nauman** | Rollback drill | Rehearsing a rollback to the previous image tag and forward again on the live service, recorded in the RUNBOOK | `RUNBOOK.md` (section 4) |
+| **Both** | Review | Cross-reviewed each pull request into `main`; ran the image locally and checked the live service | |
 
-| Member | Tasks |
-|---|---|
-| M. Zayed Nauman | Multi-stage Dockerfile,monitoring and drift section of the RUNBOOK, RUNBOOK.md |
-| Gehna Bhatia | Render deployment,extend CI to build and push images to GHCR rollback drill |
+### Reflections
+
+**Gehna Bhatia:**
+I built the Docker image, split CI into lint, test and build jobs, and published images to GHCR. Keeping training tools out of the image and stamping every image with its commit tag taught me how much easier deploys and rollbacks are when you can see exactly which build is live. I also learned that retraining on Linux in CI can pick a different champion than my laptop when models are statistically tied.
+
+**M. Zayed Nauman:**
+I deployed the container to Azure App Service and wired CI to deploy each new image and wait until it is live. I learned that most deployment problems are configuration, not code: the container port, platform health checks and publish credentials all had to be right before the image ran. Moving from Render to Azure showed me why keeping the deploy step separate from the build makes switching platforms cheap.
