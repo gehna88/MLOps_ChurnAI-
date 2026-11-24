@@ -2,7 +2,7 @@
 #
 #   lint ─┐
 #         ├─> build: train the model, build the Docker image, smoke-test the container
-#   test ─┘          └─ on push to main: push the image to GHCR and deploy it to Render
+#   test ─┘          └─ on push to main: push the image to GHCR and deploy it to Azure
 #
 # Every image is tagged with the commit (sha-1a2b3c4) and `latest`; release tags (v*)
 # also get their own image tag. Any earlier tag can be redeployed with the Rollback workflow.
@@ -157,12 +157,22 @@ jobs:
           docker push --all-tags "$IMAGE"
           echo "Pushed $IMAGE:${{ steps.tags.outputs.build }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deploy to Render
+      - name: Deploy to Azure App Service
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: ${{ env.IMAGE }}:${{ steps.tags.outputs.build }}
+
+      - name: Wait until Azure serves the new build
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-          RENDER_SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
-        run: python scripts/render_deploy.py --image "$IMAGE:${{ steps.tags.outputs.build }}" --wait
+          SERVICE_URL: ${{ vars.SERVICE_URL }}
+          BUILD: ${{ steps.tags.outputs.build }}
+        run: |
+          python scripts/wait_for_build.py --url "$SERVICE_URL" --build "$BUILD"
+          echo "Deployed $IMAGE:$BUILD to Azure ($SERVICE_URL)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload training reports
         if: always()
