@@ -11,15 +11,22 @@ prediction API. It predicts whether a bank customer will close their account, ex
 the last point of accuracy.
 
 **Project focus: A/B testing and data drift.** A/B testing is covered in
-[Milestone 1](#hyperparameter-tuning-and-ab-testing); the full data drift study is planned
-for [Milestone 2](#roadmap).
+[Milestone 1](#hyperparameter-tuning-and-ab-testing); the data drift study is in progress
+(see the [Roadmap](#roadmap)).
 
 > MLOps course project · BS Computer Science, Fall 2026 · Gehna Bhatia (29054), M. Zayed Nauman (29047)
 
 ---
 
+> **Live service:** https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net
+> ([/docs](https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net/docs) ·
+> [/health](https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net/health) ·
+> [/stats](https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net/stats)).
+> It may be shut down after grading to save cloud credit; see [Deployment](#deployment).
+
 ## Contents
 
+- [Milestone 2 submission map](#milestone-2-submission-map)
 - [Milestone 1 submission map](#milestone-1-submission-map)
 - [Results](#results)
 - [Best MLflow run](#best-mlflow-run)
@@ -27,6 +34,8 @@ for [Milestone 2](#roadmap).
 - [Hyperparameter tuning and A/B testing](#hyperparameter-tuning-and-ab-testing)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
+- [Run with Docker](#run-with-docker)
+- [Deployment](#deployment)
 - [Commands](#commands)
 - [API](#api)
 - [Project structure](#project-structure)
@@ -35,6 +44,22 @@ for [Milestone 2](#roadmap).
 - [Testing](#testing)
 - [Roadmap](#roadmap)
 - [Contributors](CONTRIBUTION.md)
+
+---
+
+## Milestone 2 submission map
+
+Where to find each Milestone 2 requirement (tag `v2.0-milestone2`):
+
+| Requirement | Where |
+|---|---|
+| Dockerfile: installs dependencies, copies model and code, exposed port, healthcheck on `/health` | [`Dockerfile`](Dockerfile) (multi-stage, port 8000, `HEALTHCHECK` runs [`scripts/healthcheck.py`](scripts/healthcheck.py)); how to run it in [Run with Docker](#run-with-docker) |
+| CI: lint job, test job, build job building the image on every push to `main` | [`.github/workflows/ci.yml`](.github/workflows/ci.yml): jobs **Lint (ruff)**, **Test (pytest)**, **Build**; see [Continuous integration](#continuous-integration) |
+| Deployed and reachable on a managed platform | **Azure Web App**, live at the URL above; see [Deployment](#deployment) |
+| Monitoring: request count and average latency | `GET /stats` (also `/metrics`) and one JSON log line per request; see [Monitoring](#monitoring) |
+| How to redeploy and roll back to a previous image tag | [`RUNBOOK.md`](RUNBOOK.md) and the [`Rollback`](.github/workflows/rollback.yml) workflow |
+| Deployment steps, live endpoint, cURL examples | [Deployment](#deployment) |
+| Names, ERP IDs, member-to-task table, reflections | [`CONTRIBUTION.md`](CONTRIBUTION.md#milestone-2-containerisation-cicd-and-deployment) |
 
 ---
 
@@ -393,13 +418,184 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 
 ---
 
+## Run with Docker
+
+Requires [Docker](https://docs.docker.com/get-docker/).
+
+**Fastest: one command, using the image CI published** (no Python, no training):
+
+```bash
+docker run --rm -p 8000:8000 ghcr.io/gehna88/churnai:latest
+```
+
+**From a clean clone: build the image yourself.** The image ships the trained model, so
+train it first (Quickstart steps 0–2), then:
+
+```bash
+docker build -t churnai .
+docker run --rm -p 8000:8000 churnai
+```
+
+(`make docker-build` and `make docker-run` do the same.)
+
+Then open **http://localhost:8000/docs**, or:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/stats
+```
+
+**Check the container's health check.** Docker calls `/health` every 30 seconds. After
+about a minute, `docker ps` shows **(healthy)** in the STATUS column:
+
+```bash
+docker ps
+# CONTAINER ID   IMAGE     ...   STATUS                    PORTS
+# 1a2b3c4d5e6f   churnai   ...   Up 2 minutes (healthy)    0.0.0.0:8000->8000/tcp
+```
+
+**What's in the image** ([`Dockerfile`](Dockerfile)):
+- Two stages on `python:3.11-slim`. The builder installs only the serving dependencies
+  (`requirements/serve.txt`) and the `churnai` package into a virtualenv. The runtime stage
+  copies that virtualenv, the config and `models/model.joblib`. MLflow, Optuna and pytest
+  never enter the image.
+- It runs as a non-root user, listens on `$PORT` (default 8000, the exposed port), and logs one
+  JSON line per request.
+- `HEALTHCHECK` passes only when `/health` reports a loaded model.
+- The build argument `BUILD` (CI passes the image tag, e.g. `sha-1a2b3c4`) is reported by
+  `/health` as `"build"`, so you can always see exactly which image is serving.
+
+---
+
+## Deployment
+
+The API runs on **Azure App Service (Web App for Containers)**:
+
+**Live URL:** https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net
+
+> The service may be **shut down after grading** to save cloud credit. If the URL doesn't
+> respond, that's why. The first request after a long idle period can take up to a minute
+> while Azure starts the container.
+
+### How a change reaches production
+
+```mermaid
+flowchart LR
+    A[Merge PR into main] --> B[CI: lint + test]
+    B --> C[CI build: train, docker build, smoke-test]
+    C --> D["Push image to GHCR<br/>ghcr.io/gehna88/churnai:sha-xxxxxxx + latest"]
+    D --> E["Deploy that exact tag to Azure<br/>(azure/webapps-deploy)"]
+    E --> F["Wait until /health reports build = sha-xxxxxxx"]
+```
+
+Every image is tagged with its commit (`sha-xxxxxxx`), so any earlier version can be
+redeployed. See [`RUNBOOK.md`](RUNBOOK.md) for redeploying and rolling back.
+
+### Deployment steps
+
+**One-time setup** (already done for the live service):
+
+1. **Image registry:** CI pushes images to GitHub Container Registry. The `churnai` package
+   is set to **Public** (GitHub → Packages → churnai → Package settings), so Azure can pull it
+   without credentials.
+2. **Azure Web App:** in the Azure portal, **Create a resource → Web App**:
+   - Publish **Container**, OS **Linux**, plan **Basic B1** (resource group `churnai-rg`)
+   - Container: registry `https://ghcr.io`, image `gehna88/churnai:latest`, port **8000**
+3. **App settings:** `WEBSITES_PORT=8000`, and **Health check** path `/health`.
+4. **Deploy credentials:** enable **SCM Basic Auth Publishing Credentials**
+   (Configuration → General settings), then download the **publish profile**.
+5. **GitHub repository settings** (Settings → Secrets and variables → Actions):
+
+| Type | Name | Value |
+|---|---|---|
+| Secret | `AZURE_WEBAPP_PUBLISH_PROFILE` | contents of the publish profile file |
+| Variable | `AZURE_WEBAPP_NAME` | `churnai-api` |
+| Variable | `SERVICE_URL` | the live URL above (no trailing `/`) |
+
+**Every deploy after that is automatic:** merge a pull request into `main`, and CI builds,
+tests, pushes and deploys the new image. CI only passes once `/health` on the live service
+reports the new build.
+
+### Try the deployed service (cURL)
+
+```bash
+URL=https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net
+
+# Health: model loaded, model version and the image build that is live
+curl $URL/health
+
+# Predict one customer
+curl -X POST $URL/predict \
+  -H "Content-Type: application/json" \
+  -d '{"credit_score": 619, "geography": "France", "gender": "Female", "age": 42,
+       "tenure": 2, "balance": 0, "num_of_products": 1, "has_cr_card": 1,
+       "is_active_member": 1, "estimated_salary": 101348.88,
+       "satisfaction_score": 2, "card_type": "DIAMOND", "point_earned": 464}'
+
+# Explain the same prediction (top 5 SHAP drivers)
+curl -X POST $URL/explain \
+  -H "Content-Type: application/json" \
+  -d '{"credit_score": 619, "geography": "France", "gender": "Female", "age": 42,
+       "tenure": 2, "balance": 0, "num_of_products": 1, "has_cr_card": 1,
+       "is_active_member": 1, "estimated_salary": 101348.88,
+       "satisfaction_score": 2, "card_type": "DIAMOND", "point_earned": 464}'
+
+# Monitoring: request counts, error counts and latency
+curl $URL/stats
+```
+
+**Windows PowerShell** (no bash `curl` syntax needed):
+
+```powershell
+$URL = "https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net"
+$c = @{credit_score=619; geography="France"; gender="Female"; age=42; tenure=2; balance=0;
+       num_of_products=1; has_cr_card=1; is_active_member=1; estimated_salary=101348.88;
+       satisfaction_score=2; card_type="DIAMOND"; point_earned=464} | ConvertTo-Json
+Invoke-RestMethod "$URL/health"
+Invoke-RestMethod "$URL/predict" -Method Post -Body $c -ContentType "application/json"
+Invoke-RestMethod "$URL/stats" | ConvertTo-Json -Depth 5
+```
+
+Example `/predict` response:
+
+```json
+{
+  "churn_probability": 0.664,
+  "churn_prediction": true,
+  "threshold": 0.63,
+  "model_version": "xgb_tuned-v1-afa3870f",
+  "model_variant": "A"
+}
+```
+
+> **Which model is live?** CI retrains from a clean clone on Linux for every image, and the
+> top candidates (tuned LightGBM, tuned XGBoost and shallow XGBoost) are a statistical tie
+> (see [Offline A/B](#2-offline-ab-real-difference-or-noise)). Tiny platform differences can
+> decide which one is champion for a given image, so always read `model_version` from
+> `/health` or `/predict` rather than assuming it.
+
+### Monitoring
+
+| What | Where |
+|---|---|
+| **Request count and average latency** | `GET /stats` (same as `/metrics`): `requests_total`, `requests_by_route`, `errors_total`, and `latency.avg_ms` / `p50_ms` / `p95_ms` / `p99_ms` over the last 1,000 requests |
+| **Per-request logs** | One JSON line per request (`request_id`, `route`, `status`, `latency_ms`). On Azure: **App Service → Monitoring → Log stream** |
+| **Is it up, and which build?** | `GET /health`: `model_loaded`, `model_version`, `build` |
+| **Data drift** | The `drift` block of `/stats`: PSI per feature and on predictions over the last 500 requests (flagged above 0.2) |
+
+A quick live demo: call `/predict` a few times, then `/stats` again, and watch `requests_total`
+rise and `latency.avg_ms` update. Azure's own startup probe (`/robots933456.txt`) is
+answered but not counted, so `/stats` shows only real traffic.
+
+---
+
 ## Commands
 
 | `make` target | Equivalent command | Purpose |
 |---|---|---|
 | `setup` | `pip install -r requirements/dev.txt && pip install -e . --no-deps` | Install pinned dependencies and the package |
 | `lint` | `ruff check src tests scripts` | Static checks |
-| `test` | `pytest` | Full suite (109 tests) |
+| `test` | `pytest` | Full suite (123 tests) |
 | `test-fast` | `pytest -m "not slow"` | Unit tests only (seconds) |
 | `coverage` | `pytest --cov=churnai --cov-report=term-missing` | Suite with coverage report |
 | `check` | lint + test | The gate CI runs |
@@ -411,9 +607,12 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 | `compare` | `python -m churnai.pipelines.compare_models` | Offline A/B: champion vs every candidate, with statistical tests |
 | `ab-fetch` | `python -m churnai.pipelines.fetch_ab_bundles` | Download the champion and challenger bundles from their MLflow aliases |
 | `ab-online` | `python -m churnai.pipelines.ab_online` | Simulated online A/B: power check, replay, verdict |
+| `simulate-batches` | `python -m churnai.pipelines.simulate_batches` | Drifted future-year batches in `data/batches/` for the drift study |
 | `pipeline` | data + train | End-to-end retrain |
 | `serve` | `uvicorn churnai.api.app:create_app --factory --port 8000` | Run the API |
 | `mlflow-ui` | `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000` | Browse experiments |
+| `docker-build` | `docker build --build-arg BUILD=local -t churnai:local .` | Build the API image (needs a trained model) |
+| `docker-run` | `docker run --rm -p 8000:8000 churnai:local` | Run the image on http://localhost:8000 |
 | `clean` | | Remove tool caches |
 | `clean-artifacts` | | Remove generated data, models, reports and the MLflow store |
 
@@ -439,8 +638,10 @@ Then open **http://127.0.0.1:8000/docs** for interactive API docs.
 | `POST` | `/explain` | Prediction plus the top 5 features driving it (SHAP, log-odds) |
 | `POST` | `/feedback` | Report a customer's real outcome during an A/B test (404 when no test is running) |
 | `GET` | `/health` | Liveness and whether a model is loaded |
-| `GET` | `/metrics` | Request counts, error counts, latency (avg/p50/p95/p99), drift report; per-variant stats during an A/B test |
+| `GET` | `/stats` | Request counts, error counts, latency (avg/p50/p95/p99), drift report; per-variant stats during an A/B test |
+| `GET` | `/metrics` | Same as `/stats` |
 | `GET` | `/model` | Full metadata and lineage of the served model |
+| `GET` | `/` | Landing page pointing to `/docs`, `/health` and `/stats` |
 | `GET` | `/docs` | Interactive Swagger UI |
 
 Invalid input (out-of-range values, unknown categories, missing or extra fields) is
@@ -553,7 +754,7 @@ ChurnAI/
 │   ├── monitoring/            # PSI drift detection, request metrics
 │   ├── api/                   # FastAPI app factory, routes, schemas, inference service
 │   └── pipelines/             # CLI entry points: profile_data, prepare_data, tune, train, compare_models, ab_online
-├── tests/                     # 109 tests
+├── tests/                     # 123 tests
 ├── Makefile
 └── pyproject.toml             # package metadata, ruff and pytest configuration
 ```
@@ -617,7 +818,7 @@ Environment variables override config without editing files:
 ## Testing
 
 ```bash
-make test        # full suite (109 tests)       or: pytest
+make test        # full suite (123 tests)       or: pytest
 make test-fast   # unit tests only, seconds     or: pytest -m "not slow"
 make coverage    # full suite with coverage     or: pytest --cov=churnai --cov-report=term-missing
 ```
@@ -645,14 +846,21 @@ require `make train` to have been run first.
 ### Continuous integration
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request to
-`main` and every push to `main`, on a fresh Ubuntu machine with **Python 3.11**. Each run proves the
-project works from a clean clone:
+`main`, every push to `main` and every `v*` tag, on fresh Ubuntu machines with **Python 3.11**.
+It has three jobs, each with its own pass/fail status on the pull request:
 
-1. `make setup`: install the pinned dependencies
-2. `make lint`: ruff
-3. `make test`: the full pytest suite
-4. `make profile`, `make data`, `make train`: the full pipeline, including MLflow tracking and registration
-5. Start the API, check `/health`, and call `/predict` with a real customer
+| Job | What it does |
+|---|---|
+| **Lint (ruff)** | `make lint` |
+| **Test (pytest)** | `make setup`, then the full pytest suite; results uploaded as `test-results` |
+| **Build** (runs only if lint and test pass) | Trains the model from a clean clone (`make profile`, `make data`, `make train`), builds the Docker image, runs it, checks `/health`, `/predict` and `/metrics`, and waits for Docker's `HEALTHCHECK` to report **healthy** |
+
+On a **push to `main`** the build job also:
+1. pushes the image to GHCR as `sha-xxxxxxx` and `latest` (release tags `v*` also get their own image tag)
+2. deploys that exact tag to Azure and waits until `/health` reports it ([Deployment](#deployment))
+
+A second workflow, [`rollback.yml`](.github/workflows/rollback.yml), redeploys any earlier
+image tag on demand ([`RUNBOOK.md`](RUNBOOK.md)).
 
 The training reports and model metadata are uploaded as a downloadable artifact on each
 run (**Actions → a run → Artifacts**).
@@ -664,11 +872,9 @@ run (**Actions → a run → Artifacts**).
 | Milestone | Scope | Status |
 |---|---|---|
 | **1. Model, API and A/B testing** | Data pipeline, MLflow-tracked training and tuning, A/B testing, FastAPI `/predict` and `/explain`, tests, Makefile, README | ✅ |
-| **2. Data drift and deployment** | Data drift study on simulated future years, multi-stage Docker image, extend CI to build and push to GHCR, Render deployment, RUNBOOK, rollback drill | 🔜 |
+| **2. Docker, CI/CD and deployment** | Multi-stage Docker image with healthcheck; CI with lint, test and build jobs; images pushed to GHCR; Azure Web App deployment; `/stats` monitoring; RUNBOOK and rollback workflow; reproducible drift batches | ✅ |
+| **Focus: data drift study** | PSI and performance on simulated future years (`make simulate-batches`), drift alerts and retraining decision | 🔜 in progress, completed by the final presentation |
 | **3. Final presentation** | Live demo of pipeline, MLflow, CI and API | ⏳ |
-
-`/health`, `/metrics`, JSON logging and PSI drift monitoring (Milestone 2 scope) are
-already implemented.
 
 ---
 
