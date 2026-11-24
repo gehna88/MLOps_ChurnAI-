@@ -107,6 +107,30 @@ def test_metrics_track_requests_and_drift(client: TestClient, customer: dict) ->
     assert body["drift"]["status"] == "insufficient_data"
 
 
+def test_stats_is_the_same_monitoring_view(client: TestClient, customer: dict) -> None:
+    """/stats (the name in the course guide) serves the same counters as /metrics."""
+    for _ in range(3):
+        client.post("/predict", json=customer)
+    stats = client.get("/stats").json()
+    assert stats["requests_by_route"]["/predict"] == 3
+    assert stats["latency"]["avg_ms"] is not None
+    assert set(stats) == set(client.get("/metrics").json())
+
+
+def test_home_points_to_docs_health_and_stats(client: TestClient) -> None:
+    response = client.get("/")
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["docs"], body["health"], body["stats"]) == ("/docs", "/health", "/stats")
+
+
+def test_azure_warmup_probe_is_ok_and_not_counted(client: TestClient) -> None:
+    assert client.get("/robots933456.txt").status_code == 200
+    body = client.get("/stats").json()
+    assert "/robots933456.txt" not in body["requests_by_route"]
+    assert body["errors_total"] == 0
+
+
 def test_request_id_is_propagated(client: TestClient) -> None:
     response = client.get("/health", headers={REQUEST_ID_HEADER: "abc123"})
     assert response.headers[REQUEST_ID_HEADER] == "abc123"
