@@ -20,7 +20,7 @@ from starlette.routing import Match
 
 from churnai import __version__
 from churnai.api.ab import VARIANT_A, VARIANT_B, ABExperiment
-from churnai.api.routes import router
+from churnai.api.routes import AZURE_WARMUP_PATH, router
 from churnai.api.service import ModelService
 from churnai.config import Settings, get_settings
 from churnai.exceptions import ChurnAIError
@@ -117,7 +117,9 @@ def create_app(
         finally:
             latency_ms = (time.perf_counter() - start) * MS_PER_SECOND
             route = _route_template(request)
-            app.state.metrics.record(route, status_code, latency_ms)
+            # The platform's own startup probe is not user traffic, so it is not counted.
+            if route != AZURE_WARMUP_PATH:
+                app.state.metrics.record(route, status_code, latency_ms)
             variant = getattr(request.state, "variant", None)
             if app.state.ab and variant:
                 app.state.ab.metrics[variant].record(route, status_code, latency_ms)

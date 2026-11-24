@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 
 from churnai.api.ab import CUSTOMER_ID_HEADER, ABExperiment
 from churnai.api.schemas import (
@@ -26,6 +27,10 @@ from churnai.api.service import ModelService, Prediction
 from churnai.monitoring.metrics import RequestMetrics
 
 router = APIRouter()
+
+# Azure App Service requests this path while starting a container to check it is up.
+# Answering 200 (instead of 404) keeps it out of the error counts in /stats.
+AZURE_WARMUP_PATH = "/robots933456.txt"
 
 
 def get_service(request: Request) -> ModelService:
@@ -68,6 +73,25 @@ def get_metrics(request: Request) -> RequestMetrics:
     return request.app.state.metrics
 
 
+@router.get("/", tags=["ops"])
+def home(request: Request) -> dict[str, Any]:
+    """Landing page: where to find the docs, health and stats."""
+    return {
+        "service": "ChurnAI churn prediction API",
+        "build": request.app.state.build,
+        "docs": "/docs",
+        "health": "/health",
+        "stats": "/stats",
+        "predict": "POST /predict",
+        "explain": "POST /explain",
+    }
+
+
+@router.get(AZURE_WARMUP_PATH, include_in_schema=False)
+def azure_warmup() -> PlainTextResponse:
+    return PlainTextResponse("ok")
+
+
 @router.get("/health", response_model=HealthResponse, tags=["ops"])
 def health(request: Request) -> HealthResponse:
     service: ModelService | None = request.app.state.service
@@ -81,9 +105,14 @@ def health(request: Request) -> HealthResponse:
 
 
 @router.get("/metrics", tags=["ops"])
+@router.get("/stats", tags=["ops"])
 def metrics(
     request: Request, collector: RequestMetrics = Depends(get_metrics)
 ) -> dict[str, Any]:
+    """Request counts, error counts, latency (avg/p50/p95/p99) and drift.
+
+    Served at both /metrics and /stats (the name the course guide uses).
+    """
     service: ModelService | None = request.app.state.service
     return {
         **collector.snapshot(),
