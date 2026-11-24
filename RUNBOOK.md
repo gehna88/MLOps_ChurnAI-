@@ -125,9 +125,26 @@ A rehearsal of section 3 on the live service, to prove the procedure works befor
 4. Run **Rollback** with the **new** tag to roll forward.
 5. Check `/health` shows the new tag again.
 
-| Date | From build | Rolled back to | Rolled forward to | Rollback run time | Result |
-|---|---|---|---|---|---|
-| | | | | | |
+| Date | Live before | Rolled back to | Rolled forward to | Result |
+|---|---|---|---|---|
+| 2026-11-24 | `sha-f93473e` | `sha-a27f762` | `sha-f93473e` | ✅ Passed |
+
+What we checked on the live service at each step:
+
+| Step | `/health` → `build` | `/health` → `model_version` | Other checks |
+|---|---|---|---|
+| Before | `sha-f93473e` | `xgb_tuned-v1-27b17d2c` | `status: ok`, model loaded |
+| After rollback | `sha-a27f762` | `xgb_tuned-v1-ad112305` | `/predict` returned a prediction (0.664, churn); uptime reset to 148 s, so Azure restarted on the older image. `/stats` did not exist in that build yet; `/metrics` did |
+| After roll-forward | `sha-f93473e` | `xgb_tuned-v1-27b17d2c` | `/stats` available again, `errors_total: 0`; uptime reset to 61 s |
+
+**What the drill showed:**
+- The Rollback workflow switched the live service to an older image and back, with no rebuild
+  and no retraining. Each run finished only once `/health` reported the requested build, and
+  each took **between 1 m 28 s and 2 m 12 s** (GitHub Actions run durations), so recovery
+  from a bad deploy takes about two minutes.
+- The **model rolls back with the code**: `model_version` changed with the image, because
+  each image ships its own trained model.
+- `build` in `/health` is a reliable way to confirm which version is live.
 
 ---
 
