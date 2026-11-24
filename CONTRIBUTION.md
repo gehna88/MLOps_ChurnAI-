@@ -54,7 +54,7 @@ I built the feature engineering and model factory, the FastAPI service, the test
 | **Gehna Bhatia** | Monitoring and docs | `/stats` endpoint, landing page, Azure warm-up probe kept out of the stats; RUNBOOK; README deployment, Docker and monitoring sections with cURL examples | `src/churnai/api/routes.py`, `RUNBOOK.md`, `README.md` |
 | **M. Zayed Nauman** | Azure deployment | Azure for Students subscription; App Service Web App for Containers (Basic B1, Central India) running the GHCR image, port 8000, health check `/health`, publish credentials | Azure resource group `churnai-rg` |
 | **M. Zayed Nauman** | Continuous deployment | CI deploys each new image tag to Azure with `azure/webapps-deploy` and waits until `/health` reports it; rollback workflow moved from Render to Azure | `.github/workflows/ci.yml`, `.github/workflows/rollback.yml`, `scripts/wait_for_build.py`, `tests/test_wait_for_build.py` |
-| **M. Zayed Nauman** | Rollback drill | Rehearsing a rollback to the previous image tag and forward again on the live service, recorded in the RUNBOOK | `RUNBOOK.md` (section 4) |
+| **Gehna Bhatia** | Rollback drill | Rolled the live service back from `sha-f93473e` to `sha-a27f762` and forward again with the Rollback workflow, verified each step on `/health`, `/predict` and `/stats`, and recorded the results | `RUNBOOK.md` (section 4) |
 | **Both** | Review | Cross-reviewed each pull request into `main`; ran the image locally and checked the live service | |
 
 ### Reflections
