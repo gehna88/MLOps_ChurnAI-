@@ -22,6 +22,7 @@ churnai-tune = "churnai.pipelines.tune:main"
 churnai-compare = "churnai.pipelines.compare_models:main"
 churnai-ab-fetch = "churnai.pipelines.fetch_ab_bundles:main"
 churnai-ab-online = "churnai.pipelines.ab_online:main"
+churnai-drift-study = "churnai.pipelines.drift_study:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

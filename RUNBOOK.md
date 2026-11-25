@@ -113,6 +113,29 @@ Azure portal → `churnai-api` → **Deployment Center** (or **Containers**) →
 `main` → change the image tag to the last good tag (e.g. `gehna88/churnai:sha-a170d9f`) →
 **Save**. Azure pulls and restarts it. Verify with `/health` as in 3.3.
 
+### 3.6 Run an older image tag locally
+
+Every tag in GHCR still runs on its own, with the model it was built with. Use this to check a
+tag starts correctly before rolling back to it, or to reproduce a bug from an older release.
+
+```bash
+TAG=sha-a27f762                                   # any tag from 3.1
+docker pull ghcr.io/gehna88/churnai:$TAG
+docker run --rm -p 8000:8000 ghcr.io/gehna88/churnai:$TAG
+```
+
+In a second terminal:
+
+```bash
+curl http://localhost:8000/health   # "build" must be the tag you ran, "model_loaded": true
+docker ps                           # STATUS shows (healthy) after about a minute
+```
+
+- **Apple Silicon Macs:** the images are built for `linux/amd64`, so add `--platform linux/amd64`
+  to `docker pull` and `docker run`. They run under emulation, a little more slowly.
+- **Port 8000 in use:** map another port on your side, e.g. `-p 8001:8000`.
+- `docker images ghcr.io/gehna88/churnai` lists the tags you have pulled.
+
 ---
 
 ## 4. Rollback drill
@@ -125,9 +148,26 @@ A rehearsal of section 3 on the live service, to prove the procedure works befor
 4. Run **Rollback** with the **new** tag to roll forward.
 5. Check `/health` shows the new tag again.
 
-| Date | From build | Rolled back to | Rolled forward to | Rollback run time | Result |
-|---|---|---|---|---|---|
-| | | | | | |
+| Date | Live before | Rolled back to | Rolled forward to | Result |
+|---|---|---|---|---|
+| 2026-11-24 | `sha-f93473e` | `sha-a27f762` | `sha-f93473e` | ✅ Passed |
+
+What we checked on the live service at each step:
+
+| Step | `/health` → `build` | `/health` → `model_version` | Other checks |
+|---|---|---|---|
+| Before | `sha-f93473e` | `xgb_tuned-v1-27b17d2c` | `status: ok`, model loaded |
+| After rollback | `sha-a27f762` | `xgb_tuned-v1-ad112305` | `/predict` returned a prediction (0.664, churn); uptime reset to 148 s, so Azure restarted on the older image. `/stats` did not exist in that build yet; `/metrics` did |
+| After roll-forward | `sha-f93473e` | `xgb_tuned-v1-27b17d2c` | `/stats` available again, `errors_total: 0`; uptime reset to 61 s |
+
+**What the drill showed:**
+- The Rollback workflow switched the live service to an older image and back, with no rebuild
+  and no retraining. Each run finished only once `/health` reported the requested build, and
+  each took **between 1 m 28 s and 2 m 12 s** (GitHub Actions run durations), so recovery
+  from a bad deploy takes about two minutes.
+- The **model rolls back with the code**: `model_version` changed with the image, because
+  each image ships its own trained model.
+- `build` in `/health` is a reliable way to confirm which version is live.
 
 ---
 
@@ -135,17 +175,37 @@ A rehearsal of section 3 on the live service, to prove the procedure works befor
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Browser shows **"Application Error"** or `/health` times out right after a deploy | Container still starting (pulling a ~260 MB image) | Wait 2–5 minutes; watch **Log stream** |
+| Browser shows **"Application Error"** or `/health` times out right after a deploy | Container still starting (pulling a ~390 MB image) | Wait 2–5 minutes; watch **Log stream** |
 | Logs say the container **didn't respond on port 8000** | Port setting lost | App setting `WEBSITES_PORT=8000`; container port 8000 in Deployment Center |
 | Logs show an **image pull error** | Wrong tag, or the GHCR package was made private | Check the tag exists on the package page; the package must stay **Public** |
 | CI step **Deploy to Azure App Service** fails with an auth error | Publish profile missing, expired or reset | Azure → Overview → **Download publish profile** again; update the `AZURE_WEBAPP_PUBLISH_PROFILE` secret. SCM Basic Auth Publishing Credentials must be **On** |
 | CI step **Wait until Azure serves the new build** times out | Azure is still running the old container, or the new one crashed on start | Check **Log stream**; if the new image is broken, roll back (section 3) |
 | `/health` returns `"status": "unavailable"` | The model failed to load inside the image | Roll back to the last good tag, then check the CI Build job logs for that commit |
 | `/stats` shows `insufficient_data` under `drift` | Fewer than 100 requests since start-up | Normal; drift needs at least 100 requests |
+| `POST /drift/study/run` returns **409** | A study is already running | Wait; follow it at `/drift/study/status` |
+| `/drift/study/status` shows `failed` | The error is in the `error` field (e.g. no model) | Fix the cause, run again. The previous results stay in place until a study succeeds |
 
 ---
 
-## 6. Shutting down to save credit
+## 6. Drift study on Azure
+
+The image ships the study CI ran before the build, so `/drift/study` works right after a deploy.
+
+* **Run a new study on the live service:** `POST /drift/study/run` (body optional, e.g.
+  `{"n_slices": 10}`), then poll `GET /drift/study/status` until `succeeded`. On the B1 plan
+  (1 core) a 5-slice study takes a few minutes; predictions keep being served meanwhile, a little
+  slower. Only one study runs at a time.
+* **MLflow on Azure** writes to `/app/mlflow/mlflow.db` inside the container, which is reset on
+  every restart or deploy. To keep runs, set the app setting
+  `CHURNAI_MLFLOW_TRACKING_URI=sqlite:////home/mlflow/mlflow.db` (and
+  `CHURNAI_MLFLOW_ARTIFACT_DIR=/home/mlflow/artifacts`) with
+  `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`, so they live on the persistent `/home` share. The
+  same applies to new study results: `CHURNAI_DRIFT_STUDY_DIR=/home/drift_study`.
+* **See the runs:** `GET /drift/study/mlflow-runs`.
+
+---
+
+## 7. Shutting down to save credit
 
 The Basic B1 plan costs about 13 USD/month from the Azure for Students credit.
 - **Pause:** Azure portal → `churnai-api` → **Stop**. Billing for the plan continues; the app stops serving.

@@ -1,0 +1,9 @@
+# Drift study: graphs and MLflow tracking. Part of the training environment and also
+# installed in the Docker image, so the deployed API can run the study
+# (POST /drift/study/run), log it to the data-drift MLflow experiment and serve its graphs.
+mlflow==2.18.0
+# MLflow 2.18 is incompatible with SQLAlchemy 2.1 (removed pool classes); pin its DB stack.
+sqlalchemy==2.0.36
+alembic==1.14.0
+matplotlib==3.9.3
+scipy==1.17.1

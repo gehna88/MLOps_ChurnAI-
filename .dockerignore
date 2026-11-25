@@ -6,10 +6,14 @@
 !pyproject.toml
 !README.md
 !requirements/serve.txt
+!requirements/drift.txt
 !src/
 !configs/config.yaml
+!configs/models.yaml
 !scripts/healthcheck.py
 !models/model.joblib
+!data/raw/Customer-Churn-Records.csv
+!reports/drift_study/
 
 **/__pycache__
 **/*.py[cod]

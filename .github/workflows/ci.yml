@@ -92,6 +92,10 @@ jobs:
           make data
           make train
 
+      # The image also ships the drift study's results and graphs (served at /drift/study).
+      - name: Run the sequential data drift study
+        run: make drift-study
+
       - name: Compute image tags
         id: tags
         run: |
@@ -124,6 +128,12 @@ jobs:
                  "satisfaction_score": 2, "card_type": "DIAMOND", "point_earned": 464}' \
             | python -c "import json, sys; r = json.load(sys.stdin); assert 0 <= r['churn_probability'] <= 1; print(r)"
           curl -sf http://127.0.0.1:8000/metrics | python -m json.tool | head -n 20
+          curl -sf http://127.0.0.1:8000/drift/study \
+            | python -c "import json, sys; r = json.load(sys.stdin); assert r['scenarios'] and r['scenarios'][0]['steps'], r.keys(); print('drift study:', [(s['name'], s['first_drift_step']) for s in r['scenarios']])"
+          curl -sf -o /dev/null -w "comparison graph: HTTP %{http_code}, %{size_download} bytes\n" \
+            http://127.0.0.1:8000/drift/study/files/scenario_comparison.png
+          curl -sf http://127.0.0.1:8000/drift/study/mlflow-runs?limit=1 \
+            | python -c "import json, sys; r = json.load(sys.stdin); print('mlflow experiment:', r['experiment'], r['tracking_uri'])"
 
       - name: Wait for the Docker HEALTHCHECK to pass
         run: |

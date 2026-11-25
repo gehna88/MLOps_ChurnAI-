@@ -10,9 +10,8 @@ prediction API. It predicts whether a bank customer will close their account, ex
 (reproducibility, testing, tracking, serving and monitoring) rather than squeezing out
 the last point of accuracy.
 
-**Project focus: A/B testing and data drift.** A/B testing is covered in
-[Milestone 1](#hyperparameter-tuning-and-ab-testing); the data drift study is in progress
-(see the [Roadmap](#roadmap)).
+**Project focus: A/B testing and data drift.** See [Project Focus](#project-focus) for what
+it is, why it fits, what we built and how we demonstrate it.
 
 > MLOps course project · BS Computer Science, Fall 2026 · Gehna Bhatia (29054), M. Zayed Nauman (29047)
 
@@ -27,11 +26,13 @@ the last point of accuracy.
 ## Contents
 
 - [Milestone 2 submission map](#milestone-2-submission-map)
+- [Project Focus](#project-focus)
 - [Milestone 1 submission map](#milestone-1-submission-map)
 - [Results](#results)
 - [Best MLflow run](#best-mlflow-run)
 - [SHAP in MLflow](#shap-in-mlflow)
 - [Hyperparameter tuning and A/B testing](#hyperparameter-tuning-and-ab-testing)
+- [Data drift study](#data-drift-study)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Run with Docker](#run-with-docker)
@@ -60,6 +61,41 @@ Where to find each Milestone 2 requirement (tag `v2.0-milestone2`):
 | How to redeploy and roll back to a previous image tag | [`RUNBOOK.md`](RUNBOOK.md) and the [`Rollback`](.github/workflows/rollback.yml) workflow |
 | Deployment steps, live endpoint, cURL examples | [Deployment](#deployment) |
 | Names, ERP IDs, member-to-task table, reflections | [`CONTRIBUTION.md`](CONTRIBUTION.md#milestone-2-containerisation-cicd-and-deployment) |
+| Project Focus: what, why, what we build or compare, how we demonstrate it | [Project Focus](#project-focus) |
+
+---
+
+## Project Focus
+
+**Our focus is A/B testing and data drift**: deciding *fairly* whether a new model should replace
+the champion, and noticing *when* the customers the model sees stop looking like the ones it was
+trained on. The two meet in one loop: drift says when to retrain, and an A/B test decides
+whether the retrained model is actually better.
+
+| | A/B testing | Data drift |
+|---|---|---|
+| **What it is** | Comparing two model versions on the same task and deciding, with a statistical test fixed in advance, whether the challenger beats the champion or the difference is noise. | Detecting changes in incoming customers (data drift) and in the model's predictions (prediction drift), and measuring what they cost, so we know when to retrain. |
+| **Why it suits ChurnAI** | Our top candidates are within 0.001 ROC-AUC of each other, so a single score cannot pick a winner. A churn model drives retention offers, so a wrong swap has a real cost: missed churners or wasted offers. | A bank's customers keep changing: they age, incomes rise, new markets open. A churn model trained once quietly goes stale, and the API never sees outcomes, so it has to watch its inputs. |
+| **What we build or compare** | **Offline:** the champion against every candidate on 5×5 repeated CV with a corrected t-test and Holm adjustment, plus test-split confidence intervals and McNemar. **Online:** the API serves champion (A) and challenger (B), routes each customer by a hash of their ID, records which variant answered every request, takes real outcomes on `POST /feedback`, and reports per-variant stats. A power check and a pre-registered decision rule decide promotion. | **Live:** every model bundle carries a reference profile, and the API computes PSI per feature and on predictions over the last 500 requests (`drift` in `/stats`). **Offline:** the sequential study our instructor set: slice the data, train on slice 1, treat each next slice as new data, measure PSI and KS against slice 1 and the training data, score a retrained and a never-retrained model, retrain, repeat. A natural-order control is compared with a simulated gradual drift. |
+| **How we demonstrate it** | `make compare` and `make ab-online` (MLflow experiment `churnai-ab`); results in [Hyperparameter tuning and A/B testing](#hyperparameter-tuning-and-ab-testing). Locally, `make ab-fetch` then `CHURNAI_AB_ENABLED=true make serve`: `/predict` with an `X-Customer-ID` header returns `model_variant`, and `/stats` splits by variant. | `make drift-study` (MLflow experiment `data-drift`); report and graphs in [Data drift study](#data-drift-study). On the live service: the `/drift/study` endpoints and the `drift` block of `/stats`. |
+
+**Where it stands (Milestone 2):**
+
+- **A/B testing:** offline and simulated online tests done. `lgbm_tuned` and `xgb_tuned` are
+  statistically tied; the online replay is inconclusive because it is underpowered (it would need
+  about 14,200 customers to detect a 5-point recall change).
+- **Data drift:** live monitor and sequential study done. The natural-order control stays below
+  PSI 0.02 (no false alarms); simulated drift is detected at step 3; retraining keeps ROC-AUC up
+  while a never-retrained model falls 0.042 behind.
+
+**Next, by the final presentation:**
+
+1. **Drift alerts:** a WARNING log line and a Discord message when the live monitor first crosses
+   PSI 0.2.
+2. **A/B on the live service:** ship both variant bundles in the image and switch the split on in
+   Azure.
+3. **Close the loop:** drift triggers a retrain, the retrained model becomes the challenger, and
+   the A/B test decides whether it replaces the champion.
 
 ---
 
@@ -336,6 +372,129 @@ paired and needs far less data.
 
 ---
 
+## Data drift study
+
+**Project focus, part 2.** A course project cannot wait for real customers to change, so the
+drift is simulated on the dataset itself, following our instructor's method:
+
+1. Cut the 10,000 validated customers into **5 slices of 2,000** (rows 1–2,000, 2,001–4,000, …).
+2. Train the model on **slice 1**.
+3. Treat the **next slice as newly arrived data**: measure how different it is from slice 1
+   (and from everything trained on so far), draw graphs, and score the model on it.
+4. **Retrain on all slices so far**, then repeat with the next slice until every row is used.
+
+```bash
+make drift-study                                   # both scenarios, 5 slices, logged to MLflow
+make drift-study DRIFT_ARGS="--slices 10"          # 10 slices of 1,000
+make drift-study DRIFT_ARGS="--scenario natural --no-mlflow"
+```
+
+**How drift is measured, at every step:**
+
+| Measure | What it tells us |
+|---|---|
+| **PSI** per feature, against slice 1 and against all training data so far | How far each feature's distribution moved. Below 0.1 stable, 0.1–0.2 moderate, above 0.2 drift |
+| **Kolmogorov–Smirnov** test for numeric features | The largest gap between the two cumulative distributions, with a p-value |
+| Mean, std and 5th–95th percentiles per slice | Whether values got higher, and whether they got more **varied** |
+| **Prediction PSI** | Whether the model's predicted probabilities shifted (reference: its out-of-fold predictions on its own training data) |
+| ROC-AUC, recall, precision on the new slice, for the **retrained** model and a model **never retrained** after slice 1 | Whether drift actually hurts, and whether retraining helps |
+
+The focus features are **Age, Balance, CreditScore and EstimatedSalary**: they have the most
+variety, so new customers are most likely to differ on them. PSI is still computed for all 13.
+
+**Two scenarios** (`drift_study.scenarios` in `configs/config.yaml`):
+
+* **`natural`**: the instructor's slicing in the original row order. The published dataset
+  is already shuffled, so this is the **control**: it should show no drift.
+* **`gradual_drift`**: the same rows, rearranged so each new slice holds older, wealthier
+  customers with higher credit scores and salaries, **and more variety** (more extreme values
+  in both directions). Every row is still used exactly once and every label is real, so
+  churn changes only because those customers really churn more.
+
+### Results (champion `lgbm_tuned`, 10,000 rows)
+
+**Natural order (control): no drift.** The largest PSI at any step was
+0.019, far below 0.1. Sequential slices of a shuffled dataset
+come from the same population, so the detector raises no false alarm.
+
+**Gradual drift: detected at step 3.**
+
+| Step | Trained on → new data | PSI Age | PSI Balance | PSI CreditScore | PSI EstimatedSalary | Churn in new slice | AUC retrained | AUC never retrained |
+|---|---|---|---|---|---|---|---|---|
+| 1 | S1–S1 → S2 | 0.05 | 0.03 | 0.06 | 0.04 | 18% | 0.837 | 0.837 |
+| 2 | S1–S2 → S3 | 0.10 | 0.08 | 0.11 | 0.14 | 18% | 0.859 | 0.841 |
+| 3 | S1–S3 → S4 | **0.22** | 0.20 | **0.21** | **0.29** | 22% | 0.859 | 0.829 |
+| 4 | S1–S4 → S5 | **0.60** | **0.38** | **0.58** | **0.56** | 28% | 0.872 | 0.830 |
+
+* Drift builds gradually: stable at step 1, moderate at step 2, above 0.2 for three focus
+  features at step 3 and for all four at step 4. Age's spread doubles (std 7 → 13).
+* Churn in the new data rises from 15% to 28% because older customers churn more.
+* **Retraining keeps up; not retraining does not.** The retrained model holds ROC-AUC at
+  0.84–0.87, while the model trained only on slice 1 stays at 0.83–0.84. The gap grows with the
+  drift: 0.02 at step 2, 0.03–0.04 once PSI is above 0.2. Drift alone did not break the model,
+  but it is the signal to retrain.
+
+![Scenarios compared](docs/figures/drift_scenario_comparison.png)
+
+### Graphs
+
+Every run writes these to `reports/drift_study/` and logs them to MLflow:
+
+| Graph | Per |
+|---|---|
+| `step<k>_distributions.png`: focus features in slice 1, the training data and the new slice, with PSI and KS | step (iteration) |
+| `step<k>_psi.png`: PSI of all 13 features against slice 1 and the training data | step |
+| `psi_over_time.png`, `psi_heatmap.png`: drift per feature across the steps | scenario |
+| `feature_trends.png`: mean and 5th–95th percentile band per slice (variety) | scenario |
+| `performance.png`: ROC-AUC and recall, retrained vs never retrained | scenario |
+| `prediction_drift.png`: actual vs predicted churn, prediction PSI | scenario |
+| `scenario_comparison.png` | study |
+
+`reports/drift_study/drift_study.md` is the full report with every table and graph.
+
+### Tracked in MLflow: experiment `data-drift`
+
+```
+drift-study 2026-11-25 00:42          one run per study: settings, comparison graph, report, results.json
+├── natural                           one run per scenario: every metric logged per step,
+│   ├── natural step 1: S1-S1 -> S2   so MLflow draws each as a line over the iterations
+│   ├── ...                           one run per step: its metrics, graphs and step_result.json
+└── gradual_drift
+    └── ...
+```
+
+Metric names: `psi_initial_<feature>`, `psi_training_<feature>`, `ks_initial_<feature>`,
+`prediction_psi`, `retrained_roc_auc`, `stale_roc_auc` and more. In the MLflow UI, open the
+`gradual_drift` run → **Model metrics** to see each one plotted over the steps.
+
+### Drift study API (also live on Azure)
+
+The Docker image includes MLflow, matplotlib and the dataset. CI runs the study before
+building, so the deployed service serves its results and graphs, and can run a new study itself.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/drift/study` | All results of the latest study (JSON) |
+| `GET` | `/drift/study/report` | The Markdown report |
+| `GET` | `/drift/study/plots` | URL of every graph, per scenario and step |
+| `GET` | `/drift/study/files/{path}` | One graph (PNG), e.g. `/drift/study/files/gradual_drift/step3_psi.png` |
+| `GET` | `/drift/study/scenarios/{name}` | One scenario: slices and steps |
+| `GET` | `/drift/study/scenarios/{name}/steps/{k}` | One iteration |
+| `POST` | `/drift/study/run` | Run a new study in the background (202); body `{"n_slices": 10, "scenarios": ["natural"], "log_to_mlflow": true}`, all optional |
+| `GET` | `/drift/study/status` | `idle`, `running`, `succeeded` or `failed` (with the error) |
+| `GET` | `/drift/study/mlflow-runs` | Runs in the `data-drift` experiment of the service's MLflow store |
+| `POST` | `/drift/compare` | PSI, KS and statistics between two sets of customers (`reference`, `current`); without `reference`, against the served model's training data |
+
+```bash
+URL=https://churnai-api-g8a9fnb8ajhsbhhx.centralindia-01.azurewebsites.net
+curl -s $URL/drift/study | python -m json.tool | head -40
+curl -s -o step3.png $URL/drift/study/files/gradual_drift/step3_distributions.png
+curl -s -X POST $URL/drift/study/run -H "Content-Type: application/json" -d '{"n_slices": 10}'
+curl -s $URL/drift/study/status
+```
+
+---
+
 ## Architecture
 
 Two pipelines connected by a single hand-off artefact, the **model bundle**. Every
@@ -608,10 +767,11 @@ answered but not counted, so `/stats` shows only real traffic.
 | `ab-fetch` | `python -m churnai.pipelines.fetch_ab_bundles` | Download the champion and challenger bundles from their MLflow aliases |
 | `ab-online` | `python -m churnai.pipelines.ab_online` | Simulated online A/B: power check, replay, verdict |
 | `simulate-batches` | `python -m churnai.pipelines.simulate_batches` | Drifted future-year batches in `data/batches/` for the drift study |
+| `drift-study` | `python -m churnai.pipelines.drift_study` | Sequential drift study: graphs per step, MLflow experiment `data-drift` (`DRIFT_ARGS="--slices 10"`) |
 | `pipeline` | data + train | End-to-end retrain |
 | `serve` | `uvicorn churnai.api.app:create_app --factory --port 8000` | Run the API |
 | `mlflow-ui` | `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000` | Browse experiments |
-| `docker-build` | `docker build --build-arg BUILD=local -t churnai:local .` | Build the API image (needs a trained model) |
+| `docker-build` | `docker build --build-arg BUILD=local -t churnai:local .` | Build the API image (needs a trained model; runs the drift study first if it is missing) |
 | `docker-run` | `docker run --rm -p 8000:8000 churnai:local` | Run the image on http://localhost:8000 |
 | `clean` | | Remove tool caches |
 | `clean-artifacts` | | Remove generated data, models, reports and the MLflow store |
@@ -626,6 +786,7 @@ answered but not counted, so `/stats` shows only real traffic.
 | `tune` | `reports/tuning.csv`, tuned candidates in `configs/models.yaml`, MLflow experiment `churnai-tuning` |
 | `compare` | `reports/ab_offline.{csv,md}`, MLflow experiment `churnai-ab` |
 | `ab-online` | `reports/ab_online.md`, `logs/ab_*.jsonl`, MLflow experiment `churnai-ab` |
+| `drift-study` | `reports/drift_study/` (`results.json`, `drift_study.md`, graphs per scenario and step), MLflow experiment `data-drift` |
 
 ---
 
@@ -643,6 +804,7 @@ answered but not counted, so `/stats` shows only real traffic.
 | `GET` | `/model` | Full metadata and lineage of the served model |
 | `GET` | `/` | Landing page pointing to `/docs`, `/health` and `/stats` |
 | `GET` | `/docs` | Interactive Swagger UI |
+| | `/drift/...` | Drift study endpoints: see [Drift study API](#drift-study-api-also-live-on-azure) |
 
 Invalid input (out-of-range values, unknown categories, missing or extra fields) is
 rejected with **422** before it reaches the model. Every response carries an
@@ -775,7 +937,7 @@ ChurnAI/
 | **Model factory registry** | Adding a model family means registering one builder plus a YAML entry |
 | **App factory, no global state** | Each test builds an isolated app with its own model |
 | **Graceful degradation** | If the model is missing, the API still starts and `/health` reports `unavailable` instead of crash-looping |
-| **Pinned, layered requirements** | `serve.txt` keeps the runtime image lean; training and dev tools stay out of it |
+| **Pinned, layered requirements** | `serve.txt` is the API; `drift.txt` (MLflow, matplotlib, scipy) adds the drift study to the image; Optuna and dev tools stay out of it |
 
 ### Drift monitoring
 
@@ -783,7 +945,8 @@ At training time a reference distribution of every feature, and of the predicted
 probability, is stored in the bundle. The API keeps a rolling window of the last 500
 requests and computes the **Population Stability Index** per feature. PSI > 0.2 flags
 drift in `/metrics`. When drift is flagged: retrain (`make pipeline`), compare in MLflow,
-then redeploy.
+then redeploy. The offline [data drift study](#data-drift-study) shows why: under gradual drift,
+retraining held ROC-AUC while the never-retrained model fell behind once PSI crossed 0.2.
 
 ---
 
@@ -873,7 +1036,7 @@ run (**Actions → a run → Artifacts**).
 |---|---|---|
 | **1. Model, API and A/B testing** | Data pipeline, MLflow-tracked training and tuning, A/B testing, FastAPI `/predict` and `/explain`, tests, Makefile, README | ✅ |
 | **2. Docker, CI/CD and deployment** | Multi-stage Docker image with healthcheck; CI with lint, test and build jobs; images pushed to GHCR; Azure Web App deployment; `/stats` monitoring; RUNBOOK and rollback workflow; reproducible drift batches | ✅ |
-| **Focus: data drift study** | PSI and performance on simulated future years (`make simulate-batches`), drift alerts and retraining decision | 🔜 in progress, completed by the final presentation |
+| **Focus: data drift study** | Sequential slicing study with retraining at every step, graphs per iteration, MLflow `data-drift` experiment, drift study API on Azure | ✅ study · 🔜 live drift alerts and a replay demo by the final presentation |
 | **3. Final presentation** | Live demo of pipeline, MLflow, CI and API | ⏳ |
 
 ---

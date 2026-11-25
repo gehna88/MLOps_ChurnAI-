@@ -89,3 +89,32 @@ drift_simulation:
     - {name: "2026_holdout", age_tilt: 0.0, germany_weight: 1.0, inactive_weight: 1.0, salary_growth: 0.0}
     - {name: "2027", age_tilt: 0.25, germany_weight: 2.0, inactive_weight: 1.0, salary_growth: 0.09}
     - {name: "2028", age_tilt: 0.35, germany_weight: 2.8, inactive_weight: 1.8, salary_growth: 0.115}
+
+drift_study:
+  # `make drift-study` (or POST /drift/study/run): the sequential drift study.
+  # The validated dataset is cut into n_slices equal parts. Slice 1 trains the first
+  # model; each next slice is treated as newly arrived data: its drift against slice 1
+  # and against all data trained on so far is measured and plotted, the model is scored
+  # on it, then retrained on every slice seen so far. Repeats until all rows are used.
+  experiment_name: data-drift
+  output_dir: reports/drift_study
+  n_slices: 5
+  # "champion" retrains the served model's configuration from models.yaml at every step.
+  model: champion
+  # PSI bands: below the warning threshold is stable, above monitoring.psi_alert_threshold is drift.
+  psi_warning_threshold: 0.1
+  # Focus features: the ones with real variety, plotted in detail and used to simulate drift.
+  drift_features: [Age, Balance, CreditScore, EstimatedSalary]
+  scenarios:
+    - name: natural
+      description: >-
+        Rows in their original dataset order (RowNumber 1-2000, 2001-4000, ...).
+        The control: the published dataset is shuffled, so little drift is expected.
+    - name: gradual_drift
+      description: >-
+        Rows ordered so each new slice has older, wealthier customers with higher credit
+        scores and salaries, and more variety (more extreme values in both directions).
+        Every row is used once and every label is real.
+      mean_shift: 0.6
+      spread: 0.6
+      noise: 1.5

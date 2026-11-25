@@ -15,7 +15,7 @@ IMAGE ?= churnai
 TAG ?= local
 
 .DEFAULT_GOAL := help
-.PHONY: help setup lint format test test-fast coverage profile data tune train shap-backfill compare ab-fetch ab-online simulate-batches pipeline serve mlflow-ui docker-build docker-run check clean clean-artifacts
+.PHONY: help setup lint format test test-fast coverage profile data tune train shap-backfill compare ab-fetch ab-online simulate-batches drift-study pipeline serve mlflow-ui docker-build docker-run check clean clean-artifacts
 
 help:
 	@echo "ChurnAI - available targets:"
@@ -34,10 +34,12 @@ help:
 	@echo "  ab-fetch         download the champion and challenger bundles from MLflow"
 	@echo "  ab-online        simulated online A/B: power check, replay, verdict"
 	@echo "  simulate-batches drifted future-year batches in data/batches for the drift study"
+	@echo "  drift-study      sequential drift study: graphs per step, MLflow data-drift runs"
+	@echo "                   (DRIFT_ARGS=\"--slices 10 --scenario natural --no-mlflow\")"
 	@echo "  pipeline         data + train"
 	@echo "  serve            run the API on http://$(HOST):$(PORT) - docs at /docs"
 	@echo "  mlflow-ui        browse experiments on http://127.0.0.1:$(MLFLOW_PORT)"
-	@echo "  docker-build     build the API image $(IMAGE):$(TAG) - needs a trained model"
+	@echo "  docker-build     build the API image $(IMAGE):$(TAG) - needs a trained model and drift study"
 	@echo "  docker-run       run that image on http://localhost:$(PORT)"
 	@echo "  check            lint + test, the same gate CI runs"
 	@echo "  clean            remove tool caches"
@@ -95,6 +97,10 @@ ab-online:
 simulate-batches:
 	$(PYTHON) -m churnai.pipelines.simulate_batches
 
+# Train on slice 1, then meet each next slice as new data: measure drift, plot, retrain.
+drift-study:
+	$(PYTHON) -m churnai.pipelines.drift_study $(DRIFT_ARGS)
+
 pipeline: data train
 
 # ---------------------------------------------------------------- serving ---
@@ -105,8 +111,12 @@ mlflow-ui:
 	$(PYTHON) -m mlflow ui --backend-store-uri sqlite:///mlflow.db --port $(MLFLOW_PORT)
 
 # ----------------------------------------------------------------- docker ---
-docker-build:
+# The image serves the drift study, so run it first if it is missing.
+docker-build: reports/drift_study/results.json
 	docker build --build-arg BUILD=$(TAG) -t $(IMAGE):$(TAG) .
+
+reports/drift_study/results.json:
+	$(PYTHON) -m churnai.pipelines.drift_study
 
 docker-run:
 	docker run --rm -p $(PORT):8000 $(IMAGE):$(TAG)
