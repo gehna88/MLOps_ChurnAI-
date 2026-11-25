@@ -25,6 +25,7 @@ it is, why it fits, what we built and how we demonstrate it.
 
 ## Contents
 
+- [Milestone 2: what we built](#milestone-2-what-we-built)
 - [Milestone 2 submission map](#milestone-2-submission-map)
 - [Project Focus](#project-focus)
 - [Milestone 1 submission map](#milestone-1-submission-map)
@@ -45,6 +46,26 @@ it is, why it fits, what we built and how we demonstrate it.
 - [Testing](#testing)
 - [Roadmap](#roadmap)
 - [Contributors](CONTRIBUTION.md)
+
+---
+
+## Milestone 2: what we built
+
+Milestone 1 delivered the model, the API and A/B testing on a laptop. Milestone 2 makes the same
+project **run anywhere, check itself on every push, and serve from a public URL**, and starts the
+Project Focus.
+
+| Area | What we built | Where |
+|---|---|---|
+| **Containerisation** | Two-stage `python:3.11-slim` image (about 390 MB) that ships the trained model bundle and the drift study results. Non-root user, port from `$PORT` (default 8000), `HEALTHCHECK` that passes only when a model is loaded, and the image tag reported by `/health` as `build`. Allow-list `.dockerignore`. | [Run with Docker](#run-with-docker), [`Dockerfile`](Dockerfile) |
+| **Continuous integration** | Lint and test jobs on every pull request and push to `main`; the build job runs only if both pass. It trains the champion and runs the drift study from a clean clone, builds the image, runs it, smoke-tests `/health`, `/predict`, `/metrics` and the drift endpoints, and waits for the healthcheck. | [Continuous integration](#continuous-integration), [`ci.yml`](.github/workflows/ci.yml) |
+| **Continuous delivery** | On a push to `main`: the image is pushed to GHCR as `sha-xxxxxxx` and `latest`, deployed to Azure, and CI waits until the live `/health` reports that exact build. | [Deployment](#deployment) |
+| **Deployment** | Azure App Service (Web App for Containers), Basic B1, Central India, health check on `/health`. | [Deployment](#deployment) |
+| **Monitoring** | `/stats`: request and error counts per route, average and p50/p95/p99 latency, live PSI drift, and per-variant numbers during an A/B test. One JSON log line per request, visible in Azure's Log stream. | [Monitoring](#monitoring) |
+| **Runbook and rollback** | `RUNBOOK.md` (health checks, redeploy, rollback, running an older image locally) and a **Rollback** workflow that redeploys any earlier tag. Drill on 2026-11-24: `sha-f93473e` → `sha-a27f762` → `sha-f93473e`, each run 1 m 28 s to 2 m 12 s, with the model rolling back together with the code. | [`RUNBOOK.md`](RUNBOOK.md) |
+| **Project Focus: data drift** | The sequential drift study (slices, PSI and KS per step, retrained vs never-retrained model, graphs at every step), logged to the MLflow experiment `data-drift` and served by `/drift/...` endpoints. | [Data drift study](#data-drift-study) |
+| **Project Focus: A/B testing** | Built in Milestone 1 (offline statistical comparison, simulated online test, live traffic split with `/feedback`); carried into the containerised service. | [Hyperparameter tuning and A/B testing](#hyperparameter-tuning-and-ab-testing) |
+| **Tests** | 168 tests, 45 of them new for the drift study and its API. | [Testing](#testing) |
 
 ---
 
@@ -502,17 +523,27 @@ deployed model maps back to exactly one MLflow run.
 
 ```mermaid
 flowchart LR
-    subgraph Training pipeline
-        A[Raw CSV] --> B[prepare_data<br/>validate · drop leakage · stratified split]
-        B --> C[train<br/>7 candidates · 5-fold CV · threshold tuning]
-        C --> D[(MLflow<br/>runs + model registry)]
-        C --> E[models/model.joblib<br/>pipeline · threshold · drift reference · SHAP background]
+    subgraph training["Training (make data, make train)"]
+        A["Raw CSV<br/>10,000 customers"] --> B["prepare_data<br/>validate, drop leakage, stratified split"]
+        B --> C["train<br/>7 candidates, 5-fold CV, threshold tuning"]
+        C --> D[("MLflow<br/>runs and model registry")]
+        C --> E["models/model.joblib<br/>pipeline, threshold, drift reference, SHAP background"]
     end
-    subgraph Serving
-        E --> F[FastAPI service]
-        F --> G["/predict · /predict/batch"]
-        F --> H["/explain (SHAP)"]
-        F --> I["/health · /metrics (latency + PSI drift)"]
+    subgraph focus["Project Focus"]
+        D --> AB["A/B testing<br/>make compare, make ab-online"]
+        A --> DS["Drift study<br/>make drift-study"]
+        DS --> D
+    end
+    subgraph delivery["CI/CD (GitHub Actions)"]
+        E --> IMG["Docker image<br/>model bundle and drift study results"]
+        DS --> IMG
+        IMG --> GHCR["GHCR<br/>sha-xxxxxxx and latest"]
+        GHCR --> AZ["Azure Web App"]
+    end
+    subgraph serving["Serving (FastAPI)"]
+        AZ --> P["/predict, /predict/batch, /explain"]
+        AZ --> H["/health, /stats<br/>latency, live PSI drift, A/B per variant"]
+        AZ --> DR["/drift/study, /drift/compare"]
     end
 ```
 
@@ -587,15 +618,16 @@ Requires [Docker](https://docs.docker.com/get-docker/).
 docker run --rm -p 8000:8000 ghcr.io/gehna88/churnai:latest
 ```
 
-**From a clean clone: build the image yourself.** The image ships the trained model, so
-train it first (Quickstart steps 0–2), then:
+**From a clean clone: build the image yourself.** The image ships the trained model and the
+drift study results, so create them first (Quickstart steps 0–2, then `make drift-study`):
 
 ```bash
 docker build -t churnai .
 docker run --rm -p 8000:8000 churnai
 ```
 
-(`make docker-build` and `make docker-run` do the same.)
+(`make docker-build` and `make docker-run` do the same; `make docker-build` runs the drift study
+first if it is missing.)
 
 Then open **http://localhost:8000/docs**, or:
 
@@ -614,10 +646,14 @@ docker ps
 ```
 
 **What's in the image** ([`Dockerfile`](Dockerfile)):
-- Two stages on `python:3.11-slim`. The builder installs only the serving dependencies
-  (`requirements/serve.txt`) and the `churnai` package into a virtualenv. The runtime stage
-  copies that virtualenv, the config and `models/model.joblib`. MLflow, Optuna and pytest
+- Two stages on `python:3.11-slim`. The builder installs the serving dependencies
+  (`requirements/serve.txt`), the drift study's (`requirements/drift.txt`: MLflow, matplotlib,
+  scipy) and the `churnai` package into a virtualenv. The runtime stage copies that virtualenv,
+  the config, `models/model.joblib`, the model catalogue, the dataset and the drift study results
+  (`reports/drift_study/`), so the API can serve the study and run a new one. Optuna and pytest
   never enter the image.
+- MLflow inside the container writes to `/app/mlflow` (see [RUNBOOK](RUNBOOK.md) section 6 to keep
+  runs across restarts on Azure).
 - It runs as a non-root user, listens on `$PORT` (default 8000, the exposed port), and logs one
   JSON line per request.
 - `HEALTHCHECK` passes only when `/health` reports a loaded model.
@@ -641,7 +677,7 @@ The API runs on **Azure App Service (Web App for Containers)**:
 ```mermaid
 flowchart LR
     A[Merge PR into main] --> B[CI: lint + test]
-    B --> C[CI build: train, docker build, smoke-test]
+    B --> C["CI build: train, drift study, docker build, smoke-test"]
     C --> D["Push image to GHCR<br/>ghcr.io/gehna88/churnai:sha-xxxxxxx + latest"]
     D --> E["Deploy that exact tag to Azure<br/>(azure/webapps-deploy)"]
     E --> F["Wait until /health reports build = sha-xxxxxxx"]
@@ -754,7 +790,7 @@ answered but not counted, so `/stats` shows only real traffic.
 |---|---|---|
 | `setup` | `pip install -r requirements/dev.txt && pip install -e . --no-deps` | Install pinned dependencies and the package |
 | `lint` | `ruff check src tests scripts` | Static checks |
-| `test` | `pytest` | Full suite (123 tests) |
+| `test` | `pytest` | Full suite (168 tests) |
 | `test-fast` | `pytest -m "not slow"` | Unit tests only (seconds) |
 | `coverage` | `pytest --cov=churnai --cov-report=term-missing` | Suite with coverage report |
 | `check` | lint + test | The gate CI runs |
@@ -899,12 +935,15 @@ for offline validation, so training-time and serving-time checks are identical.
 
 ```
 ChurnAI/
+├── .github/workflows/         # ci.yml (lint, test, build, deploy) and rollback.yml
 ├── configs/
-│   ├── config.yaml            # paths, split, CV, MLflow, explainability, monitoring settings
-│   └── models.yaml            # candidate models and hyperparameters
+│   ├── config.yaml            # paths, split, CV, MLflow, monitoring, A/B and drift study settings
+│   ├── models.yaml            # candidate models and hyperparameters
+│   └── tuning.yaml            # Optuna search spaces
 ├── data/raw/                  # source dataset (processed outputs are generated, not committed)
-├── requirements/              # pinned lock files: serve.txt ⊂ train.txt ⊂ dev.txt
-├── scripts/healthcheck.py     # container health check (stdlib only)
+├── docs/                      # MLflow screenshots and README figures
+├── requirements/              # pinned lock files: serve.txt, drift.txt ⊂ train.txt ⊂ dev.txt
+├── scripts/                   # container health check, CI wait-for-deploy
 ├── src/churnai/
 │   ├── config.py              # typed, validated settings (pydantic) with env overrides
 │   ├── logging_utils.py       # one-line JSON logging
@@ -913,10 +952,13 @@ ChurnAI/
 │   ├── features/              # feature engineering and the shared sklearn Pipeline
 │   ├── models/                # model factory, training/selection, evaluation, bundle, MLflow tracking
 │   ├── explain/               # SHAP explainer
-│   ├── monitoring/            # PSI drift detection, request metrics
-│   ├── api/                   # FastAPI app factory, routes, schemas, inference service
-│   └── pipelines/             # CLI entry points: profile_data, prepare_data, tune, train, compare_models, ab_online
-├── tests/                     # 123 tests
+│   ├── monitoring/            # PSI drift detection, request metrics, drift study and its graphs
+│   ├── api/                   # FastAPI app factory, routes, schemas, inference service, A/B, /drift endpoints
+│   └── pipelines/             # CLI entry points: profile_data, prepare_data, tune, train, compare_models,
+│                              #   fetch_ab_bundles, ab_online, simulate_batches, drift_study, backfill_shap
+├── tests/                     # 168 tests
+├── Dockerfile, .dockerignore  # two-stage serving image
+├── RUNBOOK.md                 # redeploy and roll back the live service
 ├── Makefile
 └── pyproject.toml             # package metadata, ruff and pytest configuration
 ```
@@ -932,7 +974,7 @@ ChurnAI/
 | **Preprocessing inside the model `Pipeline`** | The API reuses exactly the fitted transformations; no serving-side reimplementation |
 | **Select on CV, report on test** | Model choice and threshold never see the test set, so the test score is unbiased |
 | **Leakage guard** (test AUC > 0.95 aborts training) | Implausibly good results are treated as a bug, not a win |
-| **Model bundle** (pipeline + threshold + lineage + drift reference + SHAP background) | One artefact to ship; the API needs nothing else and no MLflow at runtime |
+| **Model bundle** (pipeline + threshold + lineage + drift reference + SHAP background) | One artefact to ship; serving predictions needs nothing else and never calls MLflow (MLflow in the image is used only by the drift study) |
 | **`ExperimentTracker` interface** (MLflow or no-op) | Training logic is unit-testable without an MLflow server |
 | **Model factory registry** | Adding a model family means registering one builder plus a YAML entry |
 | **App factory, no global state** | Each test builds an isolated app with its own model |
@@ -965,6 +1007,7 @@ Environment variables override config without editing files:
 | `CHURNAI_MLFLOW_TRACKING_URI` | For example, a remote MLflow server |
 | `CHURNAI_MLFLOW_ARTIFACT_DIR` | MLflow artifact location |
 | `CHURNAI_AB_ENABLED` | `true` serves the champion and challenger as an A/B test |
+| `CHURNAI_DRIFT_STUDY_DIR` | Where the drift study writes and the API reads its results (default `reports/drift_study`) |
 | `CHURNAI_LOG_LEVEL` | `DEBUG`, `INFO` (default), ... |
 | `CHURNAI_LOG_FORMAT` | `json` (default for the API) or `text` |
 
@@ -981,7 +1024,7 @@ Environment variables override config without editing files:
 ## Testing
 
 ```bash
-make test        # full suite (123 tests)       or: pytest
+make test        # full suite (168 tests)       or: pytest
 make test-fast   # unit tests only, seconds     or: pytest -m "not slow"
 make coverage    # full suite with coverage     or: pytest --cov=churnai --cov-report=term-missing
 ```
@@ -1002,7 +1045,9 @@ require `make train` to have been run first.
 | Data | Bad rows rejected with reasons; leakage and identifier columns can never reach training; deterministic stratified split |
 | Models | Factory, `scale_pos_weight=auto`, threshold tuning, CV-only selection, leakage guard |
 | Explainability | Top-k ordering; additivity for XGBoost, LightGBM and Logistic Regression |
-| Monitoring | PSI maths; no false alarm on training-like traffic; detects shifted populations |
+| Monitoring | PSI maths; no false alarm on training-like traffic; detects shifted populations; `/stats` |
+| A/B testing | Stable hash routing and split share; the variant is recorded with every prediction and joined to `/feedback`; per-variant stats; corrected t-test, Holm, McNemar, bootstrap and power maths; underpowered tests are refused a verdict |
+| Drift study | Slicing uses every row once; the drift ordering is reproducible and really drifts; one step per new slice with its graphs; results, report and MLflow `data-drift` runs; a failed study keeps the previous results; every `/drift` endpoint, including path-traversal protection |
 | API | All endpoints, 422 validation, batch limits, request-ID propagation, behaviour without a model |
 | MLflow | Runs logged, champion registered, bundle lineage matches the registry |
 
@@ -1016,7 +1061,7 @@ It has three jobs, each with its own pass/fail status on the pull request:
 |---|---|
 | **Lint (ruff)** | `make lint` |
 | **Test (pytest)** | `make setup`, then the full pytest suite; results uploaded as `test-results` |
-| **Build** (runs only if lint and test pass) | Trains the model from a clean clone (`make profile`, `make data`, `make train`), builds the Docker image, runs it, checks `/health`, `/predict` and `/metrics`, and waits for Docker's `HEALTHCHECK` to report **healthy** |
+| **Build** (runs only if lint and test pass) | Trains the model and runs the drift study from a clean clone (`make profile`, `make data`, `make train`, `make drift-study`), builds the Docker image, runs it, checks `/health`, `/predict`, `/metrics`, `/drift/study`, a drift graph and `/drift/study/mlflow-runs`, and waits for Docker's `HEALTHCHECK` to report **healthy** |
 
 On a **push to `main`** the build job also:
 1. pushes the image to GHCR as `sha-xxxxxxx` and `latest` (release tags `v*` also get their own image tag)
@@ -1036,7 +1081,7 @@ run (**Actions → a run → Artifacts**).
 |---|---|---|
 | **1. Model, API and A/B testing** | Data pipeline, MLflow-tracked training and tuning, A/B testing, FastAPI `/predict` and `/explain`, tests, Makefile, README | ✅ |
 | **2. Docker, CI/CD and deployment** | Multi-stage Docker image with healthcheck; CI with lint, test and build jobs; images pushed to GHCR; Azure Web App deployment; `/stats` monitoring; RUNBOOK and rollback workflow; reproducible drift batches | ✅ |
-| **Focus: data drift study** | Sequential slicing study with retraining at every step, graphs per iteration, MLflow `data-drift` experiment, drift study API on Azure | ✅ study · 🔜 live drift alerts and a replay demo by the final presentation |
+| **Project Focus: A/B testing and data drift** | Offline and simulated online A/B tests; live PSI monitor; sequential drift study with graphs per step, MLflow `data-drift` experiment and `/drift` API | ✅ built · 🔜 drift alerts, A/B on the live service and the drift → retrain → A/B loop by the final presentation |
 | **3. Final presentation** | Live demo of pipeline, MLflow, CI and API | ⏳ |
 
 ---
