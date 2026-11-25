@@ -84,6 +84,9 @@ def home(request: Request) -> dict[str, Any]:
         "stats": "/stats",
         "predict": "POST /predict",
         "explain": "POST /explain",
+        "drift_study": "/drift/study",
+        "drift_plots": "/drift/study/plots",
+        "drift_compare": "POST /drift/compare",
     }
 
 

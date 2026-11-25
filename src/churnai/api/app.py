@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request, Response
 from starlette.routing import Match
 
 from churnai import __version__
+from churnai.api import drift
 from churnai.api.ab import VARIANT_A, VARIANT_B, ABExperiment
 from churnai.api.routes import AZURE_WARMUP_PATH, router
 from churnai.api.service import ModelService
@@ -102,7 +103,9 @@ def create_app(
     app.state.ab = None
     app.state.metrics = RequestMetrics(settings.monitoring.latency_window_size)
     app.state.started_at = time.monotonic()
+    app.state.drift_job = drift.make_job(settings)
     app.include_router(router)
+    app.include_router(drift.router)
 
     @app.middleware("http")
     async def observe_requests(

@@ -1,8 +1,8 @@
 """Experiment tracking behind a small interface.
 
 Training code depends on :class:`ExperimentTracker`, not on MLflow directly, so
-it can be unit-tested with :class:`NullTracker` and MLflow stays out of the
-serving image. MLflow is imported lazily inside :class:`MlflowTracker`.
+it can be unit-tested with :class:`NullTracker`. MLflow is imported lazily inside
+:class:`MlflowTracker`, so the API only loads it when the drift study logs runs.
 """
 
 from __future__ import annotations
@@ -32,7 +32,9 @@ class ExperimentTracker(Protocol):
         self, name: str, tags: dict[str, str] | None = None, nested: bool = False
     ) -> Iterator[str | None]: ...
     def log_params(self, params: dict[str, Any]) -> None: ...
-    def log_metrics(self, metrics: dict[str, float], prefix: str = "") -> None: ...
+    def log_metrics(
+        self, metrics: dict[str, float], prefix: str = "", step: int | None = None
+    ) -> None: ...
     def log_dict(self, payload: dict[str, Any], filename: str) -> None: ...
     def log_artifact(self, path: Path, artifact_path: str | None = None) -> None: ...
     def log_model(self, pipeline: Pipeline, example: Any) -> None: ...
@@ -52,7 +54,9 @@ class NullTracker:
     def log_params(self, params: dict[str, Any]) -> None:
         pass
 
-    def log_metrics(self, metrics: dict[str, float], prefix: str = "") -> None:
+    def log_metrics(
+        self, metrics: dict[str, float], prefix: str = "", step: int | None = None
+    ) -> None:
         pass
 
     def log_dict(self, payload: dict[str, Any], filename: str) -> None:
@@ -133,8 +137,11 @@ class MlflowTracker:
     def log_params(self, params: dict[str, Any]) -> None:
         self._mlflow.log_params(params)
 
-    def log_metrics(self, metrics: dict[str, float], prefix: str = "") -> None:
-        self._mlflow.log_metrics({f"{prefix}{k}": v for k, v in metrics.items()})
+    def log_metrics(
+        self, metrics: dict[str, float], prefix: str = "", step: int | None = None
+    ) -> None:
+        """``step`` makes MLflow plot the metric as a line over steps (e.g. drift study iterations)."""
+        self._mlflow.log_metrics({f"{prefix}{k}": v for k, v in metrics.items()}, step=step)
 
     def log_dict(self, payload: dict[str, Any], filename: str) -> None:
         self._mlflow.log_dict(payload, filename)

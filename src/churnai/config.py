@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from churnai.exceptions import ConfigError
 
@@ -32,6 +32,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "CHURNAI_MLFLOW_ARTIFACT_DIR": ("mlflow", "artifact_dir"),
     "CHURNAI_MODEL_DIR": ("paths", "model_dir"),
     "CHURNAI_AB_ENABLED": ("ab_test", "enabled"),
+    "CHURNAI_DRIFT_STUDY_DIR": ("drift_study", "output_dir"),
 }
 
 
@@ -131,6 +132,62 @@ class DriftSimulationConfig(_Frozen):
     years: list[DriftYear] = Field(min_length=1)
 
 
+class DriftScenario(_Frozen):
+    """How the rows are ordered before the dataset is cut into slices.
+
+    With ``mean_shift`` and ``spread`` both 0 the rows keep their dataset order
+    (RowNumber): the instructor's plain slicing, and the study's control. Otherwise
+    each row gets a score from the drift features and the rows are sorted by it, so
+    later slices hold customers with higher values (``mean_shift``) and more extreme
+    values in both directions (``spread``, i.e. more variety). Every row is used
+    exactly once and every label stays real.
+    """
+
+    name: str = Field(pattern=r"^[a-z0-9_]+$")
+    description: str
+    mean_shift: float = 0.0
+    spread: float = Field(default=0.0, ge=0)
+    noise: float = Field(default=1.0, ge=0)  # randomness in the ordering: higher = gentler drift
+
+    @property
+    def is_natural(self) -> bool:
+        return self.mean_shift == 0 and self.spread == 0
+
+
+class DriftStudyConfig(_Frozen):
+    experiment_name: str
+    output_dir: Path
+    n_slices: int = Field(ge=2, le=20)
+    model: str  # a candidate name from models.yaml, or "champion" for the served model's config
+    psi_warning_threshold: float = Field(gt=0)
+    drift_features: list[str] = Field(min_length=1)
+    scenarios: list[DriftScenario] = Field(min_length=1)
+
+    @field_validator("drift_features")
+    @classmethod
+    def _numeric_features(cls, value: list[str]) -> list[str]:
+        from churnai.data.schema import NUMERIC_COLUMNS
+
+        unknown = sorted(set(value) - set(NUMERIC_COLUMNS))
+        if unknown:
+            raise ValueError(f"drift_features must be numeric model features, got {unknown}")
+        return value
+
+    @field_validator("scenarios")
+    @classmethod
+    def _unique_names(cls, value: list[DriftScenario]) -> list[DriftScenario]:
+        names = [s.name for s in value]
+        if len(names) != len(set(names)):
+            raise ValueError(f"Duplicate drift scenario names: {names}")
+        return value
+
+    def scenario(self, name: str) -> DriftScenario:
+        for scenario in self.scenarios:
+            if scenario.name == name:
+                return scenario
+        raise KeyError(name)
+
+
 class Settings(_Frozen):
     """Root configuration object. Use :func:`get_settings` to obtain one."""
 
@@ -144,6 +201,7 @@ class Settings(_Frozen):
     monitoring: MonitoringConfig
     ab_test: ABTestConfig
     drift_simulation: DriftSimulationConfig
+    drift_study: DriftStudyConfig
 
     def resolve(self, relative: Path | str) -> Path:
         """Resolve a project-relative path against the project root."""
@@ -188,6 +246,10 @@ class Settings(_Frozen):
         if uri.startswith(prefix) and not Path(uri[len(prefix) :]).is_absolute():
             return f"{prefix}{self.resolve(uri[len(prefix):]).as_posix()}"
         return uri
+
+    @property
+    def drift_study_dir(self) -> Path:
+        return self.resolve(self.drift_study.output_dir)
 
     @property
     def mlflow_artifact_uri(self) -> str:
