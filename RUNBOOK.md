@@ -211,3 +211,4 @@ The Basic B1 plan costs about 13 USD/month from the Azure for Students credit.
 - **Pause:** Azure portal → `churnai-api` → **Stop**. Billing for the plan continues; the app stops serving.
 - **Remove completely after grading:** **Resource groups → `churnai-rg` → Delete resource group.**
   Then note in the README that the service was shut down.
+Last verified on the live service: 2026-11-25, by Gehna Bhatia and M. Zayed Nauman
